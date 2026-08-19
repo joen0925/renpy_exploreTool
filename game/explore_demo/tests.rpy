@@ -1,0 +1,413 @@
+##################################################
+# tests.rpy
+#
+#   探索工具包的自動化測試。
+#
+#   執行方式（在 SDK 目錄下）：
+#       renpy.exe <專案路徑> test explore_smoke
+#
+#   testcase 只在 test 模式下執行，正常玩遊戲不受影響。
+##################################################
+
+init python:
+
+    # 測試過程的軌跡記錄，用來確認每個步驟真的有跑到
+    # （光看 PASSED 不夠，要能證明流程確實走完）
+    # 產生在專案根目錄的 test_trace.txt
+    _TRACE_PATH = __import__("os").path.join(renpy.config.basedir, "test_trace.txt")
+
+    def _trace_reset():
+        with open(_TRACE_PATH, "w", encoding="utf-8") as f:
+            f.write("=== trace start ===\n")
+
+    def _trace(step):
+        room = current_room.name if current_room else None
+        exploring = renpy.get_screen("explore") is not None
+
+        # 診斷用：目前房間的 on_enter 計數與物件身分，
+        # 以及 rooms 字典裡同名房間的計數與身分 (兩者應該是同一個物件)
+        cnt = current_room.on_enter_count if current_room else None
+        rid = id(current_room) if current_room else None
+
+        in_dict = getattr(store, "rooms", {}).get(room) if room else None
+        dict_cnt = in_dict.on_enter_count if in_dict else None
+        dict_id = id(in_dict) if in_dict else None
+
+        with open(_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(
+                f"{step} | room={room} | explore={exploring} | offset={camera.offset:.1f}"
+                f" | count={cnt} id={rid} | dict_count={dict_cnt} dict_id={dict_id}\n"
+            )
+
+
+# 走一遍完整的探索流程：
+#   開場白 -> 點熱點講話 -> 換房間 -> 在新房間點熱點 -> 換回原房間
+#
+# 重點是驗證「連續多次互動之後，探索狀態還在」，
+# 也就是 explore_loop 有沒有確實接住 say_in_room 的返回點。
+#
+# 對話一律用「advance until 某個熱點出現」來推進，而不是數 advance 的次數。
+# 因為對話講完 explore 畫面才會被放回來，熱點出現就代表已經回到可互動狀態，
+# 這樣即使之後改了對話長度，測試也不用跟著改。
+testcase explore_smoke:
+
+    # 每個語句的等待上限，預設 5 秒對含轉場的流程來說偏短
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    # 測試是從主選單開始跑的，先點「開始」進遊戲。
+    # 注意這個專案的介面是繁體中文，按鈕文字不是 "Start"。
+    click "開始"
+
+    # --- 開場：推完 demo_room 的 on_enter，直到探索畫面回來 ---
+    advance until "走去廚房"
+    $ _trace("1_開場結束")
+    $ assert current_room.name == "demo_room", f"開場應該在 demo_room，實際在 {current_room.name}"
+    # 有設 on_enter 的房間，第一次進來一定會觸發一次
+    $ assert current_room.on_enter_count == 1, f"第一次進房後計數應該是 1，實際 {current_room.on_enter_count}"
+
+    # --- 第 1 次互動：點熱點講話，並切換到另一個房間 ---
+    click "走去廚房"
+    advance until "打開冰箱"
+    $ _trace("2_切換到kitchen")
+    $ assert current_room.name == "kitchen", f"應該已經切換到 kitchen，實際在 {current_room.name}"
+
+    # --- 第 2 次互動：驗證換房間之後熱點仍然可以點 ---
+    click "打開冰箱"
+    advance until "打開冰箱"
+    $ _trace("3_在kitchen點熱點")
+    $ assert current_room.name == "kitchen", "點熱點講完話不該換房間"
+
+    # --- 第 3 次互動：需要先移動鏡頭才點得到的熱點 ---
+    # back 在背景圖 x=200，kitchen 初始 offset=-240，螢幕位置 -40 在畫面外。
+    # 把滑鼠移到螢幕左側，鏡頭會掃過去，熱點才會進入畫面。
+    #
+    # 一定要用 renpy.set_mouse_pos() 而不是測試框架的 move：
+    # camera.update() 讀的是 renpy.get_mouse_pos()，那個函式不經過測試框架的滑鼠覆寫，
+    # 拿到的永遠是「真實游標位置」。用 move 的話鏡頭不會動，
+    # 測試會變成靠執行當下游標剛好在哪裡來決定成敗。
+    # (副作用：這會實際移動你的滑鼠游標)
+    $ renpy.set_mouse_pos(60, 540)
+    pause 2.0
+    $ assert camera.offset > -100, f"鏡頭應該已經掃到左側，實際 offset={camera.offset}"
+    $ _trace("4_鏡頭掃到左邊")
+
+    click "回到測試房間"
+    advance until "走去廚房"
+    $ _trace("5_切換回demo_room")
+    $ assert current_room.name == "demo_room", f"應該切換回 demo_room，實際在 {current_room.name}"
+
+    # on_enter 的觸發次數不該超過房間自己設定的上限。
+    #
+    # 這裡刻意不寫死成某個數字 —— demo 房間的 on_enter_limit 是可以隨時被調整的，
+    # 寫死的話別人改 demo 就會讓這個測試誤報。
+    # limit 本身的精確邏輯 (1 / 2 / None / 沒設 on_enter) 由 unit_checks 負責，
+    # 那裡是自己建 Room 來測，不受 demo 內容影響。
+    $ _limit = current_room.on_enter_limit
+    $ assert _limit is None or current_room.on_enter_count <= _limit, f"on_enter 觸發 {current_room.on_enter_count} 次，超過上限 {_limit}"
+
+    # --- 第 4 次互動：確認繞了一圈之後探索狀態還在 ---
+    # 走到這裡代表 explore_loop 一直有接住返回點，沒有漏出去回主選單
+    click "走去廚房"
+    advance until "打開冰箱"
+    $ _trace("6_第四次互動完成")
+    $ assert current_room.name == "kitchen", "第四次互動仍應正常運作"
+
+
+# 翻頁視窗 (page_popup) 與 debug 標點面板 (explore_debug) 的測試。
+testcase popup_and_debug:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "看說明"
+    $ _trace("1_進入探索")
+
+    # --- 翻頁視窗 ---
+    click "看說明"
+    pause 0.5
+    $ _trace("2_開啟視窗")
+    $ assert renpy.get_screen("page_popup") is not None, "視窗應該要出現"
+    $ assert page_popup_index == 0, "每次打開都要從第一頁開始"
+
+    click "下一頁"
+    pause 0.3
+    $ _trace("3_翻到第二頁")
+    $ assert page_popup_index == 1, f"應該翻到第二頁，實際 index={page_popup_index}"
+
+    # 最後一頁的按鈕會變成「關閉」
+    click "關閉"
+    pause 0.5
+    $ _trace("4_關閉視窗")
+    $ assert renpy.get_screen("page_popup") is None, "視窗應該要關掉"
+
+    # --- debug 標點面板 ---
+    keysym "K_F9"
+    pause 0.3
+    $ _trace("5_F9開啟面板")
+    $ assert renpy.get_screen("explore_debug") is not None, "F9 應該要叫出 debug 面板"
+
+    # 移到畫面中央再釘座標。
+    # 用 renpy.set_mouse_pos 而不是 move —— F10 記錄的是 renpy.get_mouse_pos()，
+    # 也就是真實游標位置，測試框架的 move 影響不到它。
+    $ renpy.set_mouse_pos(960, 400)
+    pause 1.0
+    keysym "K_F10"
+    pause 0.3
+    $ _trace("6_F10釘住座標")
+    $ assert debug_pinned_pos is not None, "F10 應該要釘住座標"
+
+    # 面板開著時，底下的熱點仍然要能點 (驗證 overlay 沒有擋住探索畫面)
+    click "走去廚房"
+    advance until "打開冰箱"
+    $ _trace("7_面板開著仍可點熱點")
+    $ assert current_room.name == "kitchen", "debug 面板不該擋住熱點"
+    $ assert renpy.get_screen("explore_debug") is not None, "換房間後面板應該還在"
+
+    # --- 重新載入房間資料 ---
+    # 先記住目前房間物件的身分，重新載入後應該換成一個全新的物件
+    $ _old_room_id = id(current_room)
+
+    click "重新載入房間資料"
+    pause 0.3
+    $ assert explore_debug_confirm_reload, "重新載入應該要先跳確認，不能直接執行"
+
+    click "確定重新載入"
+    pause 0.5
+    $ _trace("8_重新載入房間資料")
+    $ assert not explore_debug_confirm_reload, "確認狀態應該要收掉"
+    $ assert id(current_room) != _old_room_id, "房間物件應該被重建成新的"
+    $ assert current_room.name == "kitchen", "重新載入後應該留在同一個房間"
+
+    keysym "K_F9"
+    pause 0.3
+    $ _trace("9_F9關閉面板")
+    $ assert renpy.get_screen("explore_debug") is None, "F9 應該要收起 debug 面板"
+
+
+# 純邏輯測試：不需要畫面，直接建物件驗證方法的行為。
+# 這些跑起來很快也很穩定，適合放邊界條件。
+testcase unit_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- Camera.enter_room 的置中計算 ---
+
+    # 背景比螢幕寬 (3200 > 1920)：置中，offset = -(3200-1920)/2 = -640
+    $ _cam = Camera()
+    $ _cam.enter_room(Room(name="wide", background=None, bg_width=3200))
+    $ assert _cam.offset == -640, f"寬背景應該置中在 -640，實際 {_cam.offset}"
+
+    # 背景等於螢幕寬：不需要偏移
+    $ _cam.enter_room(Room(name="exact", background=None, bg_width=1920))
+    $ assert _cam.offset == 0, f"等寬背景 offset 應該是 0，實際 {_cam.offset}"
+
+    # 背景比螢幕窄 (1200 < 1920)：min(0, 正數) 要夾成 0，維持貼左，不能變成正的往右推
+    $ _cam.enter_room(Room(name="narrow", background=None, bg_width=1200))
+    $ assert _cam.offset == 0, f"窄背景 offset 應該夾成 0，實際 {_cam.offset}"
+
+    # --- Room 的熱點增刪查 ---
+
+    $ _room = Room(name="t", background=None)
+    $ _hs = Hotspot(name="a", x=10, y=20)
+
+    $ _room.add_hotspot(_hs)
+    $ assert _room.get_hotspot("a") is _hs, "get_hotspot 應該找得到剛加進去的熱點"
+    $ assert _room.get_hotspot("nope") is None, "找不到的名稱應該回傳 None"
+
+    $ _room.remove_hotspot(_hs)
+    $ assert _room.get_hotspot("a") is None, "remove_hotspot 之後應該找不到了"
+
+    # 移除不存在的熱點不該爆掉
+    $ _room.remove_hotspot(_hs)
+
+    # 每個 Room 要有自己的 hotspots list，不能共用同一個
+    $ _room2 = Room(name="t2", background=None)
+    $ _room2.add_hotspot(Hotspot(name="b", x=0, y=0))
+    $ assert len(_room.hotspots) == 0, "兩個 Room 不該共用同一個 hotspots list"
+
+    # --- on_enter_limit 的判斷 ---
+
+    # 預設 limit=1：觸發過一次就不再觸發
+    $ _r1 = Room(name="r1", background=None, on_enter="x")
+    $ assert _r1.can_trigger_on_enter(), "第一次進來應該要觸發"
+    $ _r1.on_enter_count = 1
+    $ assert not _r1.can_trigger_on_enter(), "預設 limit=1，第二次不該觸發"
+
+    # limit=None：無限次
+    $ _r2 = Room(name="r2", background=None, on_enter="x", on_enter_limit=None)
+    $ _r2.on_enter_count = 99
+    $ assert _r2.can_trigger_on_enter(), "limit=None 應該每次都觸發"
+
+    # limit=2：前兩次觸發
+    $ _r3 = Room(name="r3", background=None, on_enter="x", on_enter_limit=2)
+    $ _r3.on_enter_count = 1
+    $ assert _r3.can_trigger_on_enter(), "limit=2 時第二次還該觸發"
+    $ _r3.on_enter_count = 2
+    $ assert not _r3.can_trigger_on_enter(), "limit=2 時第三次不該觸發"
+
+    # 沒設 on_enter 的房間，不管 limit 是多少都不該觸發
+    $ _r4 = Room(name="r4", background=None, on_enter_limit=None)
+    $ assert not _r4.can_trigger_on_enter(), "沒有 on_enter 就不該觸發"
+
+    # --- Hotspot 的狀態方法 ---
+
+    $ _h = Hotspot(name="h", x=0, y=0)
+    $ assert _h.visible and _h.enabled, "預設應該是可見且可用"
+
+    $ _h.hide()
+    $ assert not _h.visible, "hide() 之後 visible 應該是 False"
+    $ _h.show()
+    $ assert _h.visible, "show() 之後 visible 應該是 True"
+
+    $ _h.disable()
+    $ assert not _h.enabled, "disable() 之後 enabled 應該是 False"
+    $ _h.enable()
+    $ assert _h.enabled, "enable() 之後 enabled 應該是 True"
+
+    # 每個 Hotspot 要有自己的 data dict
+    $ _h2 = Hotspot(name="h2", x=0, y=0)
+    $ _h.data["k"] = 1
+    $ assert _h2.data == {}, "兩個 Hotspot 不該共用同一個 data dict"
+
+
+# 已經修好的 bug 的回歸測試。
+# 這兩個問題都是實際發生過、使用者回報的，所以留下測試防止再犯。
+testcase regression_fixes:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "走去廚房"
+
+    ##############################################
+    # bug 1: 進房間的開場白講完後，對話框沒有收起來
+    #        (say_in_room 少了 window hide)
+    ##############################################
+    $ _trace("1_開場白結束")
+    $ assert renpy.get_screen("say") is None, "開場白講完後對話框應該要收起來"
+
+    # 點熱點講話，講完之後也一樣要收
+    click "走去廚房"
+    advance until "打開冰箱"
+    $ _trace("2_熱點對話結束")
+    $ assert renpy.get_screen("say") is None, "熱點對話講完後對話框應該要收起來"
+
+    ##############################################
+    # bug 2: F10 釘住的房間座標會隨著滑鼠移動而改變
+    #        (原本只存螢幕座標，事後才用當下的 offset 換算)
+    ##############################################
+    keysym "K_F9"
+    pause 0.3
+    $ assert renpy.get_screen("explore_debug") is not None
+
+    # 注意：測試框架的 move 影響不到 camera。
+    # camera.update() 讀的是 renpy.get_mouse_pos()，那個函式不經過測試框架的滑鼠覆寫，
+    # 拿到的是「真實滑鼠位置」。所以這裡用 renpy.set_mouse_pos() 移動真正的游標。
+    $ renpy.set_mouse_pos(1850, 500)
+    pause 2.0
+    $ _offset_right = camera.offset
+    $ _trace("3_滑鼠移到右側")
+
+    keysym "K_F10"
+    pause 0.3
+    $ _pinned = debug_pinned_pos
+    $ _trace("4_釘住座標")
+
+    $ assert _pinned is not None, "F10 應該要釘住座標"
+    $ assert len(_pinned) == 3, "釘住的資料應該是 (螢幕x, 螢幕y, 房間x) 三個值"
+
+    # 釘住的房間座標，應該是用「按下去當下」的鏡頭位置換算的
+    $ _sx, _sy, _rx = _pinned
+    $ assert _rx == _sx - int(_offset_right), f"房間座標應該是釘住當下換算的，期望 {_sx - int(_offset_right)}，實際 {_rx}"
+
+    # 把滑鼠甩到左邊，鏡頭會跑到完全不同的位置
+    $ renpy.set_mouse_pos(60, 500)
+    pause 2.5
+    $ _trace("5_鏡頭移到別的位置")
+
+    # 先確認鏡頭真的動了，不然下面那條斷言等於沒測到東西
+    $ assert abs(camera.offset - _offset_right) > 100, f"鏡頭應該要明顯移動過，實際只從 {_offset_right} 變到 {camera.offset}"
+
+    # 這就是 bug 的核心：釘住的值不該因為鏡頭移動而改變
+    $ assert debug_pinned_pos == _pinned, f"釘住的座標不該改變，原本 {_pinned} 變成 {debug_pinned_pos}"
+
+    keysym "K_F9"
+    pause 0.3
+    $ _trace("5_收起面板")
+
+
+# 翻頁視窗的邊界情況。
+testcase popup_edge_cases:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    click "開始"
+    advance until "看說明"
+
+    # --- ESC 要能關掉視窗 ---
+    # page_popup 裡有 key "game_menu" action Return()，
+    # 沒攔截的話按 ESC 會跳出 Ren'Py 的遊戲選單而不是關閉視窗。
+    click "看說明"
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is not None, "視窗應該要打開"
+
+    keysym "K_ESCAPE"
+    pause 0.8
+    $ assert renpy.get_screen("page_popup") is None, "ESC 應該要關掉視窗"
+    $ assert renpy.get_screen("save") is None, "ESC 不該跳出遊戲選單"
+    $ assert renpy.get_screen("explore") is not None, "關掉視窗後應該回到探索畫面"
+
+    # --- 只有一頁時，不該出現翻頁按鈕 ---
+    $ renpy.show_screen("page_popup", pages=[{"title": "單頁", "text": "只有一頁的內容"}])
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is not None
+
+    # 注意：測試框架的文字選擇器走的是 find_focus，只找得到「可聚焦的元件」(按鈕)。
+    # 標題、說明文字這種純 text 永遠找不到，不能拿來當斷言對象。
+    # 所以這裡只檢查按鈕：單頁時翻頁鈕要消失、關閉鈕要在。
+    assert not "下一頁"
+    assert not "上一頁"
+    assert "關閉"
+
+    $ renpy.hide_screen("page_popup")
+    pause 0.3
+
+    # --- 空的 pages 不該讓遊戲爆掉 ---
+    # screen 裡有 if not pages: timer 0.01 action Return() 這道保險
+    $ renpy.show_screen("page_popup", pages=[])
+    pause 0.5
+    $ renpy.hide_screen("page_popup")
+    pause 0.3
+    $ assert renpy.get_screen("explore") is not None, "空頁面不該影響探索畫面"
+
+
+# hotspot.visible 對畫面的實際影響。
+# unit_checks 只驗證了屬性值有沒有被改到，
+# 這裡驗證改了之後畫面上是不是真的看不到、點不到。
+testcase hotspot_visibility:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    click "開始"
+    advance until "看說明"
+
+    # 一開始看得到
+    assert "看說明"
+
+    # 隱藏之後就不該出現在畫面上
+    $ current_room.get_hotspot("help").hide()
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert not "看說明"
+
+    # 其他熱點不受影響
+    assert "走去廚房"
+
+    # 放回來又看得到
+    $ current_room.get_hotspot("help").show()
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert "看說明"
