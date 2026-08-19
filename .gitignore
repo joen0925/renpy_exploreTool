@@ -28,3 +28,7 @@
 # 測試產生的檔案
 /test_trace.txt
 /tests/screenshots/
+
+# Claude Code 的工作設定與初始化模板 (不納入版控)
+/.claude/
+/claude_init/
