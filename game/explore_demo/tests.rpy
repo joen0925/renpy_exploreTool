@@ -24,19 +24,14 @@ init python:
         room = current_room.name if current_room else None
         exploring = renpy.get_screen("explore") is not None
 
-        # 診斷用：目前房間的 on_enter 計數與物件身分，
-        # 以及 rooms 字典裡同名房間的計數與身分 (兩者應該是同一個物件)
-        cnt = current_room.on_enter_count if current_room else None
-        rid = id(current_room) if current_room else None
-
-        in_dict = getattr(store, "rooms", {}).get(room) if room else None
-        dict_cnt = in_dict.on_enter_count if in_dict else None
-        dict_id = id(in_dict) if in_dict else None
+        # on_enter 的觸發次數存在 GameState.events，不在 Room 物件上。
+        # Room 是靜態定義會被 reload 重建，次數是遊戲進度要跟著存檔走。
+        cnt = game_state.events.count_of(f"{room}.on_enter") if room else None
 
         with open(_TRACE_PATH, "a", encoding="utf-8") as f:
             f.write(
-                f"{step} | room={room} | explore={exploring} | offset={camera.offset:.1f}"
-                f" | count={cnt} id={rid} | dict_count={dict_cnt} dict_id={dict_id}\n"
+                f"{step} | room={room} | explore={exploring}"
+                f" | offset={camera.offset:.1f} | on_enter_count={cnt}\n"
             )
 
 
@@ -64,7 +59,8 @@ testcase explore_smoke:
     $ _trace("1_開場結束")
     $ assert current_room.name == "demo_room", f"開場應該在 demo_room，實際在 {current_room.name}"
     # 有設 on_enter 的房間，第一次進來一定會觸發一次
-    $ assert current_room.on_enter_count == 1, f"第一次進房後計數應該是 1，實際 {current_room.on_enter_count}"
+    $ _enter_id = current_room.name + ".on_enter"
+    $ assert game_state.events.count_of(_enter_id) == 1, f"第一次進房後計數應該是 1，實際 {game_state.events.count_of(_enter_id)}"
 
     # --- 第 1 次互動：點熱點講話，並切換到另一個房間 ---
     click "走去廚房"
@@ -104,7 +100,8 @@ testcase explore_smoke:
     # limit 本身的精確邏輯 (1 / 2 / None / 沒設 on_enter) 由 unit_checks 負責，
     # 那裡是自己建 Room 來測，不受 demo 內容影響。
     $ _limit = current_room.on_enter_limit
-    $ assert _limit is None or current_room.on_enter_count <= _limit, f"on_enter 觸發 {current_room.on_enter_count} 次，超過上限 {_limit}"
+    $ _cnt = game_state.events.count_of(current_room.name + ".on_enter")
+    $ assert _limit is None or _cnt <= _limit, f"on_enter 觸發 {_cnt} 次，超過上限 {_limit}"
 
     # --- 第 4 次互動：確認繞了一圈之後探索狀態還在 ---
     # 走到這裡代表 explore_loop 一直有接住返回點，沒有漏出去回主選單
@@ -227,29 +224,34 @@ testcase unit_checks:
     $ _room2.add_hotspot(Hotspot(name="b", x=0, y=0))
     $ assert len(_room.hotspots) == 0, "兩個 Room 不該共用同一個 hotspots list"
 
-    # --- on_enter_limit 的判斷 ---
+    # --- on_enter 簡寫會轉成一個 Event ---
+    # 進房行為只有一套機制 (Event)，on_enter 只是它的簡寫入口。
 
-    # 預設 limit=1：觸發過一次就不再觸發
-    $ _r1 = Room(name="r1", background=None, on_enter="x")
-    $ assert _r1.can_trigger_on_enter(), "第一次進來應該要觸發"
-    $ _r1.on_enter_count = 1
-    $ assert not _r1.can_trigger_on_enter(), "預設 limit=1，第二次不該觸發"
+    $ _r1 = Room(name="r1", background=None, on_enter="hello")
+    $ assert len(_r1.events) == 1, "on_enter 應該轉成一個 Event"
+
+    $ _e1 = _r1.events[0]
+    $ assert _e1.id == "r1.on_enter", f"id 應該是「房間名.on_enter」，實際 {_e1.id}"
+    $ assert _e1.effect.label == "hello", "Event 的 Effect 應該帶著那個 label"
+    $ assert _e1.limit == 1, "on_enter_limit 預設是 1"
+    $ assert _e1.sequence == -1000, "on_enter 應該排在所有事件最前面"
+    $ assert _e1.condition is None, "on_enter 是無條件的"
 
     # limit=None：無限次
     $ _r2 = Room(name="r2", background=None, on_enter="x", on_enter_limit=None)
-    $ _r2.on_enter_count = 99
-    $ assert _r2.can_trigger_on_enter(), "limit=None 應該每次都觸發"
+    $ assert _r2.events[0].limit is None
 
-    # limit=2：前兩次觸發
+    # limit=2
     $ _r3 = Room(name="r3", background=None, on_enter="x", on_enter_limit=2)
-    $ _r3.on_enter_count = 1
-    $ assert _r3.can_trigger_on_enter(), "limit=2 時第二次還該觸發"
-    $ _r3.on_enter_count = 2
-    $ assert not _r3.can_trigger_on_enter(), "limit=2 時第三次不該觸發"
+    $ assert _r3.events[0].limit == 2
 
-    # 沒設 on_enter 的房間，不管 limit 是多少都不該觸發
+    # 沒設 on_enter 就不該產生 Event
     $ _r4 = Room(name="r4", background=None, on_enter_limit=None)
-    $ assert not _r4.can_trigger_on_enter(), "沒有 on_enter 就不該觸發"
+    $ assert _r4.events == [], "沒有 on_enter 就不該產生 Event"
+
+    # 自己掛的 events 與 on_enter 產生的會並存
+    $ _r5 = Room(name="r5", background=None, on_enter="x", events=[Event(id="r5.extra")])
+    $ assert len(_r5.events) == 2, "自訂 events 與 on_enter 應該並存"
 
     # --- Hotspot 的狀態方法 ---
 
@@ -310,6 +312,29 @@ testcase state_checks:
     $ _inv.add("a")
     $ _inv.reset()
     $ assert _inv.keys() == [], "reset 之後應該清空"
+
+    # --- 物品目錄的一致性檢查 ---
+
+    # dict key 與 Item.key 一致 -> 原樣回傳
+    python:
+        _good = {"key": Item(key="key", name="鑰匙")}
+        assert validate_item_catalog(_good) is _good, "一致的目錄應該原樣回傳"
+
+    # 不一致 -> 直接報錯。
+    # 實際被使用的是 dict key，Item.key 只是給人看的，
+    # 兩邊不一樣的話遊戲照跑但條件會查不到，所以寧可啟動時就爆掉。
+    python:
+        _bad = {"coin10": Item(key="coin", name="10元")}
+
+        try:
+            validate_item_catalog(_bad)
+            assert False, "dict key 與 Item.key 不一致時應該要報錯"
+        except ValueError as e:
+            # 錯誤訊息要把兩個 key 都講出來，不然還是不知道哪裡錯
+            assert "coin10" in str(e) and "coin" in str(e)
+
+    # 空目錄不該出錯
+    $ assert validate_item_catalog({}) == {}
 
     # --- FlagState ---
 
@@ -542,6 +567,110 @@ testcase event_checks:
     $ assert collect_events([], TriggerType.ENTER_ROOM, _ctx8) == []
 
 
+# 物品欄與條件事件的完整流程：
+#   撿鑰匙 -> 熱點自動消失 -> 物品欄出現 -> 用鑰匙開櫃子 -> 拿到紙條 -> 再點變成空的
+testcase inventory_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "走去廚房"
+
+    # 一開始物品欄是空的，鑰匙熱點看得到
+    $ assert not game_state.inventory.keys(), "開場物品欄應該是空的"
+    assert "生鏽的鑰匙"
+    assert "(無)"
+
+    # --- 撿鑰匙 ---
+    click "生鏽的鑰匙"
+    advance until "走去廚房"
+    $ _trace("1_撿到鑰匙")
+
+    $ assert game_state.inventory.has("key"), "撿完應該有 key"
+    $ assert game_state.inventory.count_of("key") == 1
+
+    # 熱點的 condition 是 forbid=["key"]，撿走之後應該自動消失。
+    # 用完整的 label 文字 (含 emoji) 來比對，才不會跟物品欄裡的名稱搞混。
+    assert not "🔑 生鏽的鑰匙"
+
+    # 物品欄現在該顯示它了 (名稱是即時查 item_catalog 得到的)
+    assert "生鏽的鑰匙"
+    assert not "(無)"
+
+    # --- 去廚房用鑰匙開櫃子 ---
+    click "走去廚房"
+    advance until "上鎖的櫃子"
+    $ _trace("2_進廚房")
+
+    click "上鎖的櫃子"
+    advance until "上鎖的櫃子"
+    $ _trace("3_開櫃子")
+
+    $ assert game_state.flags.has("locker_opened"), "有鑰匙就該開得了櫃子"
+    $ assert game_state.inventory.has("note"), "開櫃子應該拿到紙條"
+
+    # --- 再點一次，這次該講「空了」 ---
+    # locker_open 已死、locker_locked 因為 locker_opened 而不成立，
+    # 只剩 locker_empty 會觸發
+    click "上鎖的櫃子"
+    advance until "上鎖的櫃子"
+    $ _trace("4_再點一次櫃子")
+
+    # 紙條只該拿到一張 —— 這是玩家看得到的不變量。
+    #
+    # 這裡刻意不去斷言「哪個 event 死了」：event id 與 limit 設定是 demo 的內容，
+    # 隨時可能被調整 (實際上就被改過一次，害這個測試誤報)。
+    # limit 用完會死亡這個「機制」由 event_checks 用自建的 Event 驗證，
+    # 不受 demo 怎麼寫影響。
+    $ assert game_state.inventory.count_of("note") == 1, "紙條不該拿到第二張"
+
+    # --- 點物品欄的物品會顯示描述 ---
+    click "潮濕的紙條"
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is not None, "點物品應該跳出說明視窗"
+
+    click "關閉"
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is None
+    $ _trace("5_看完物品說明")
+
+
+# 沒有鑰匙的時候，同一個熱點要講不一樣的話。
+testcase locked_without_key:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    click "開始"
+    advance until "走去廚房"
+
+    # 這次刻意不撿鑰匙，直接去廚房
+    click "走去廚房"
+    advance until "上鎖的櫃子"
+
+    $ assert not game_state.inventory.has("key"), "這個測試不該有鑰匙"
+
+    click "上鎖的櫃子"
+    advance until "上鎖的櫃子"
+
+    # 條件不成立，所以櫃子沒開、也沒拿到紙條
+    $ assert not game_state.flags.has("locker_opened"), "沒鑰匙不該開得了櫃子"
+    $ assert not game_state.inventory.has("note")
+
+    # 重複點也一樣 —— 沒鑰匙就是打不開，而且不會因為點過就失去機會。
+    #
+    # 這裡同樣不斷言具體的 event id 或觸發次數：那些是 demo 的內容。
+    # 「條件不符不算觸發過、也不會死亡」這個機制由 event_checks 驗證。
+    click "上鎖的櫃子"
+    advance until "上鎖的櫃子"
+
+    $ assert not game_state.flags.has("locker_opened"), "重複點還是不該開得了"
+    $ assert not game_state.inventory.has("note")
+
+    # 熱點還在，玩家之後拿到鑰匙還能回來開
+    assert "上鎖的櫃子"
+
+
 # 已經修好的 bug 的回歸測試。
 # 這兩個問題都是實際發生過、使用者回報的，所以留下測試防止再犯。
 testcase regression_fixes:
@@ -573,36 +702,51 @@ testcase regression_fixes:
     pause 0.3
     $ assert renpy.get_screen("explore_debug") is not None
 
-    # 注意：測試框架的 move 影響不到 camera。
-    # camera.update() 讀的是 renpy.get_mouse_pos()，那個函式不經過測試框架的滑鼠覆寫，
-    # 拿到的是「真實滑鼠位置」。所以這裡用 renpy.set_mouse_pos() 移動真正的游標。
-    $ renpy.set_mouse_pos(1850, 500)
-    pause 2.0
-    $ _offset_right = camera.offset
-    $ _trace("3_滑鼠移到右側")
-
+    # 先確認 F10 這個按鍵真的有綁到 pin 函式
     keysym "K_F10"
     pause 0.3
-    $ _pinned = debug_pinned_pos
-    $ _trace("4_釘住座標")
+    $ _trace("3_按F10釘住座標")
+    $ assert debug_pinned_pos is not None, "F10 應該要釘住座標"
 
-    $ assert _pinned is not None, "F10 應該要釘住座標"
-    $ assert len(_pinned) == 3, "釘住的資料應該是 (螢幕x, 螢幕y, 房間x) 三個值"
+    # 舊版只存 (螢幕x, 螢幕y) 兩個值，房間座標是顯示時才用當下的 offset 算的，
+    # 所以鏡頭一動數字就跟著跑。現在要存三個值，房間座標在釘住當下就算好。
+    $ assert len(debug_pinned_pos) == 3, "釘住的資料應該是 (螢幕x, 螢幕y, 房間x) 三個值"
 
-    # 釘住的房間座標，應該是用「按下去當下」的鏡頭位置換算的
-    $ _sx, _sy, _rx = _pinned
-    $ assert _rx == _sx - int(_offset_right), f"房間座標應該是釘住當下換算的，期望 {_sx - int(_offset_right)}，實際 {_rx}"
+    # 換算的正確性直接呼叫函式來驗，不透過按鍵。
+    #
+    # 用按鍵的話，「按下的那一刻」跟「事後讀 camera.offset」之間隔了好幾幀，
+    # 鏡頭還在收斂中，兩個值不一樣，算出來的期望值就對不上。
+    # 包在同一個 python 區塊裡就沒有這個問題 —— 區塊內不會有畫面更新。
+    python:
+        pin_debug_pos()
 
-    # 把滑鼠甩到左邊，鏡頭會跑到完全不同的位置
-    $ renpy.set_mouse_pos(60, 500)
-    pause 2.5
-    $ _trace("5_鏡頭移到別的位置")
+        _offset_at_pin = int(camera.offset)
+        _pinned = debug_pinned_pos
+        _sx, _sy, _rx = _pinned
 
-    # 先確認鏡頭真的動了，不然下面那條斷言等於沒測到東西
-    $ assert abs(camera.offset - _offset_right) > 100, f"鏡頭應該要明顯移動過，實際只從 {_offset_right} 變到 {camera.offset}"
+        assert _rx == _sx - _offset_at_pin, \
+            f"房間座標應該是釘住當下換算的，期望 {_sx - _offset_at_pin}，實際 {_rx}"
 
-    # 這就是 bug 的核心：釘住的值不該因為鏡頭移動而改變
-    $ assert debug_pinned_pos == _pinned, f"釘住的座標不該改變，原本 {_pinned} 變成 {debug_pinned_pos}"
+    # 直接改 camera.offset 來模擬鏡頭移動。
+    #
+    # 這裡刻意「不」用滑鼠去推鏡頭：camera.update() 讀的是真實游標位置，
+    # 而測試框架的 move 影響不到它，renpy.set_mouse_pos() 又會受視窗焦點影響
+    # (實測過會時靈時不靈)，把測試建立在那上面等於在賭執行環境。
+    #
+    # 整段包在同一個 python 區塊裡是必要的：區塊內不會有畫面更新，
+    # camera.update() 沒機會把 offset 拉回去，斷言才有意義。
+    python:
+        _offset_before = camera.offset
+        camera.offset = _offset_before - 400.0
+
+        assert abs(camera.offset - _offset_before) > 100, \
+            f"鏡頭應該要明顯移動過，實際只從 {_offset_before} 變到 {camera.offset}"
+
+        # 這就是 bug 的核心：釘住的值不該因為鏡頭移動而改變
+        assert debug_pinned_pos == _pinned, \
+            f"釘住的座標不該改變，原本 {_pinned} 變成 {debug_pinned_pos}"
+
+    $ _trace("4_鏡頭移到別的位置")
 
     keysym "K_F9"
     pause 0.3

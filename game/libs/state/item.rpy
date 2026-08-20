@@ -32,6 +32,33 @@ init python:
             return f"<Item {self.key}>"
 
 
+    def validate_item_catalog(items):
+        """
+        檢查物品目錄裡每一筆的 dict key 與 Item.key 是否一致，回傳原本的 dict。
+
+        用法：在 build_items() 的最後包一層
+            return validate_item_catalog(items)
+
+        為什麼需要這個檢查：
+        真正被使用的是 dict 的 key —— give_items / require / item_def 查的都是它。
+        Item.key 只是給人看的。所以兩邊不一致的話遊戲照跑，物品欄也顯示正常，
+        只有在你照著 Item.key 寫條件時才會發現「明明有這個物品卻查不到」，
+        而那時候你多半不會聯想到是目錄寫錯了。
+
+        這種靜默的不一致最難查，所以寧可在遊戲啟動時就直接爆掉。
+        """
+        for dict_key, item in items.items():
+            if item.key != dict_key:
+                raise ValueError(
+                    f"物品目錄不一致：這一筆放在 \"{dict_key}\" 底下，"
+                    f"但 Item.key 寫的是 \"{item.key}\"。\n"
+                    f"實際被使用的是 \"{dict_key}\" (give_items / require / item_def 查的都是它)，"
+                    f"請把兩邊改成一樣。"
+                )
+
+        return items
+
+
     def item_def(key):
         """
         從物品目錄查一個物品的定義。查不到回傳 None。

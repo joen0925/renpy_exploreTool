@@ -23,7 +23,7 @@ init python:
             require_any=None,  # 至少要有一個 (OR)
             forbid=None,       # 全部都不能有 (NOT)
 
-            # 逃生艙：接收 StateView 的函式，回傳 True/False。
+            # 逃生艙check：接收 StateView 的函式，回傳 True/False。
             # 上面三個欄位表達不了的條件才用它，例如
             #   check=lambda v: v.item_count("coin") >= 3
             check=None,

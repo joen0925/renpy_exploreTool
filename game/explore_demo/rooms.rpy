@@ -16,6 +16,7 @@ init python:
 
         rooms["demo_room"] = build_demo_room()
         rooms["kitchen"] = build_kitchen()
+        rooms["bed_room"] = build_bed_room()
 
         return rooms
 

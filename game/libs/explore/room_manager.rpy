@@ -38,13 +38,22 @@ init python:
         current_room = room_target
         camera.enter_room(current_room)
 
-        # 如果這個房間有設定 on_enter 而且還沒超過觸發次數上限，
-        # 進來時自動講話/執行那個 label
-        if room_target.can_trigger_on_enter():
-            room_target.on_enter_count += 1
-            renpy.call("say_in_room", room_target.on_enter)
+        # 派發進房事件。
+        # 第一階段是純 Python：檢查條件、改狀態、收集要跑的 label。
+        context = EventContext(store.game_state, current_room)
+
+        labels = collect_events(
+            current_room.events,
+            TriggerType.ENTER_ROOM,
+            context,
+            TriggerType.ENTER_ROOM,
+        )
+
+        if labels:
+            # 第二階段交給 run_event_labels 依序執行那些 label
+            renpy.call("run_event_labels", labels)
         else:
-            # 沒有 on_enter 的話，至少要讓畫面重新整理一次，
+            # 沒有事件要跑的話，至少要讓畫面重新整理一次，
             # 新房間的背景與熱點才會馬上換上去
             renpy.restart_interaction()
 
@@ -75,19 +84,8 @@ label explore_loop:
 #
 # 用途：先把熱點按鈕收起來 (不然按鈕會搶走點擊，對話點不下去)，
 # 只留房間背景，講完/做完事之後再自動恢復成可以互動探索的畫面。
+# 內部就是「只跑一個 label 的 run_event_labels」，
+# 畫面切換、收對話框的邏輯完全共用，不再各寫一份。
 label say_in_room(next_label):
-    hide screen explore
-    show screen room_background
-
-    call expression next_label from _call_expression
-
-    # 把對話框收起來。
-    # Ren'Py 的對話框不會因為「對話講完了」就自動消失，
-    # 它會一直留在畫面上直到有人叫它收起來。
-    # 不寫這行的話，回到探索狀態後最後一句話會一直掛在畫面下方。
-    window hide
-
-    hide screen room_background
-    show screen explore
-
+    call run_event_labels([next_label]) from _call_say_in_room
     return

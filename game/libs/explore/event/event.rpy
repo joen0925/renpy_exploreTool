@@ -23,8 +23,7 @@ init python:
     class Event:
         def __init__(
             self,
-            id,               # 全域唯一字串。慣例用 "房間名.事件名"，例如 "hall.ghost_warn"
-                              # 一定要唯一：EventState 用它當 key，撞名會讓兩個事件共用狀態
+            id,               # 全域唯一字串。慣例用 "房間名.事件名"，例如 "hall.ghost_warn" 一定要唯一：EventState 用它當 key，撞名會讓兩個事件共用狀態
 
             condition=None,   # Condition。None = 無條件，一定通過
             effect=None,      # Effect。None = 什麼都不做 (只用來記錄「來過了」時有意義)

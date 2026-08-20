@@ -3,18 +3,35 @@
 FNAF 風格的橫向掃視探索系統：一張比螢幕寬的背景圖，滑鼠往左右移動、鏡頭跟著掃過去，
 圖上放可以點擊的熱點，點下去講話或觸發事件。
 
+> **想直接開始寫遊戲內容 → 看 [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)**
+> 那份有完整的欄位說明與常見情境食譜。
+> 這份 README 講的是引擎本身、debug 面板與測試。
+
 ---
 
 ## 檔案結構
 
 ```
-game/libs/explore/          引擎，不要放具體房間資料
+game/libs/explore/          探索引擎，不要放具體房間資料
 ├── camera.rpy              Camera 類別 + default camera
 ├── room.rpy                Room 類別
-├── hotspot.rpy             Hotspot 類別 + hotspot_action()
+├── hotspot.rpy             Hotspot 類別 + label _fire_hotspot
 ├── room_manager.rpy        change_room() / explore_loop / say_in_room
 ├── explore_screen.rpy      screen explore() / room_background()
-└── explore_debug.rpy       F9 標點面板（疊加式 overlay）
+├── explore_debug.rpy       F9 標點面板（疊加式 overlay）
+└── event/                  事件系統
+    ├── trigger.rpy         TriggerType
+    ├── condition.rpy       Condition（只讀）
+    ├── effect.rpy          Effect（只寫）
+    ├── event.rpy           Event / EventContext
+    └── dispatcher.rpy      collect_events() + run_event_labels
+
+game/libs/state/            遊戲狀態，不依賴 explore，可單獨複製
+├── item.rpy                Item + item_def()
+├── inventory_state.rpy     物品欄
+├── flag_state.rpy          旗標
+├── event_state.rpy         事件的觸發次數與死亡名單
+└── game_state.rpy          GameState + StateView + default game_state
 
 game/libs/ui/               通用 UI，跟探索工具包無關
 └── page_popup.rpy          翻頁視窗 show_pages()
@@ -53,7 +70,7 @@ init python:
             x=1200, y=400,                  # 背景圖座標，不是螢幕座標
             width=300, height=500,
             debug=True,                     # 開發時開著看得到判定範圍
-            action=Call("say_in_room", "kitchen_look_fridge"),
+            on_click="kitchen_look_fridge",
         ))
 
         return room
@@ -94,7 +111,7 @@ $ change_room("kitchen")
 熱點的 action 裡要切房間的話，包成 label 再用 `Call`：
 
 ```renpy
-action=Call("say_in_room", "go_to_kitchen")
+on_click="go_to_kitchen"
 
 label go_to_kitchen:
     $ change_room("kitchen")
@@ -139,7 +156,7 @@ Hotspot(name="key", x=800, y=600,
         label_size=28,
         label_color="#e67e22",
         label_hover_color="#ffffff",
-        action=Call("say_in_room", "pick_key"))
+        on_click="pick_key")
 ```
 
 **B. 圖片熱點**：
@@ -148,7 +165,7 @@ Hotspot(name="key", x=800, y=600,
 Hotspot(name="lamp", x=800, y=600, width=200, height=300,
         idle="images/lamp.png",         # 平常顯示
         hover="images/lamp_glow.png",   # 滑鼠移上去時顯示
-        action=Call("say_in_room", "look_lamp"))
+        on_click="look_lamp")
 ```
 
 `idle` / `hover` 會被縮放成 `width` × `height`。
@@ -160,15 +177,28 @@ Hotspot(name="lamp", x=800, y=600, width=200, height=300,
 
 | 參數 | 說明 |
 |---|---|
-| `action` | 點擊時執行的 screen action，通常是 `Call("say_in_room", "label名")` |
+| `on_click` | 點一下要跑的 label 名稱（字串）。**簡寫**，等同於「無條件、每次都執行」 |
+| `events` | 完整的 Event 清單，需要條件分支或次數限制時用 |
+| `condition` | 顯示條件（`Condition`）。條件不成立時這個熱點不會出現 |
 | `sound` | 點擊音效，用按鈕內建的 `activate_sound` 播放 |
-| `visible` | 是否顯示，預設 `True` |
-| `enabled` | **v0.1 尚未接上**，改了不會有效果 |
+| `visible` | 手動顯示開關，預設 `True`。與 `condition` 是 AND 關係 |
+| `enabled` | **尚未接上**，改了不會有效果 |
 
-### 尚未實作的欄位
+`on_click` 與 `events` 可以同時存在，`events` 先跑、`on_click` 後跑。
+但多數情況只需要其中一個。
 
-`item` / `require_item` / `action_if_missing` 這三個欄位可以填，
-但 v0.1 沒有 inventory 模組，目前不會被消費，點擊一律執行 `action`。
+### 用條件控制顯示，不要用 hide()
+
+```renpy
+# 撿走鑰匙後這個熱點自動消失
+Hotspot(name="key_pickup", x=800, y=600, label="🔑 鑰匙",
+        condition=Condition(forbid=["key"]),
+        on_click="pick_up_key")
+```
+
+這比命令式的 `hide()` 好，因為它是**冪等**的：不管讀哪個存檔、reload 幾次，
+只要 `GameState` 裡有 `key`，這個熱點就是不顯示。
+`hide()` 則要靠「當初有沒有正確執行過」來維持狀態，一旦漏掉就永遠不一致。
 
 ### 其他
 
@@ -193,28 +223,211 @@ Y 座標比較單純：背景圖高度會被強制縮放成螢幕高度（1080�
 
 ---
 
-## 對話為什麼要走 say_in_room
+## 探索中的對話是怎麼運作的
 
 探索畫面 `explore()` 的熱點按鈕鋪滿整個畫面，會把點擊全部吃掉，
-對話框會點不下去。所以**所有探索中途的對話都必須走 `say_in_room`**：
+對話框會點不下去。所以講話之前一定要先把熱點收起來。
 
-```renpy
-action=Call("say_in_room", "你的label名稱")
-```
-
-`say_in_room` 做的事：
+**這件事現在是自動的** —— `on_click` 和 `events` 的 label 都會經過 `run_event_labels`：
 
 ```
 收起 explore（熱點消失）
    ↓
 顯示 room_background（只剩背景，放在 master layer，立繪能正常疊上去）
    ↓
-跑你的 label
+依序跑收集到的 label
+   ↓
+window hide（收掉對話框）
    ↓
 收起 room_background、放回 explore（回到可互動狀態）
 ```
 
-**不要直接寫 `action=Jump("你的label")`** —— 熱點按鈕不會被收起來，對話會卡住。
+所以你只要寫 `on_click="label名"` 就好，不用自己處理畫面。
+
+**`say_in_room` 還在，但你多半用不到它** —— 它現在只是
+「只跑一個 label 的 `run_event_labels`」，留給從 python 直接呼叫的場合：
+
+```renpy
+$ renpy.call("say_in_room", "某個label")
+```
+
+**不要在熱點上直接用 `Jump("你的label")`** —— 那會跳過整套畫面處理，
+熱點按鈕不會被收起來，對話會卡住。
+
+---
+
+## 事件系統
+
+需要「有鑰匙才開得了門」這種條件分支時，用 `events` 取代 `on_click`。
+
+```
+Room / Hotspot  →  Trigger  →  Event  →  Condition  →  通過  →  Effect  →  GameState
+                                             ↓
+                                           不通過（什麼都不做）
+```
+
+一句話分工：**`Condition` 只讀不寫，`Effect` 只寫不讀，劇情走 label。**
+
+### 完整範例：有鑰匙才開得了門
+
+```renpy
+Hotspot(name="door", x=800, y=400, label="🚪 門",
+        events=[
+            Event(id="hall.door_open",
+                  condition=Condition(require=["key"]),
+                  effect=Effect(set_flags=["door_opened"], label="open_the_door"),
+                  sequence=10,
+                  stop=True),          # 開了就不要再講「鎖住了」
+
+            Event(id="hall.door_locked",
+                  effect=Effect(label="door_is_locked"),
+                  sequence=20,
+                  limit=None),         # 沒鑰匙的話每次點都要講
+        ])
+
+label open_the_door:
+    "鑰匙轉動了。"
+    $ change_room("corridor")
+    return
+
+label door_is_locked:
+    "鎖住了，需要鑰匙。"
+    return
+```
+
+### Event
+
+| 參數 | 說明 |
+|---|---|
+| `id` | **全域唯一**字串，慣例用 `"房間名.事件名"`。撞名會讓兩個事件共用觸發次數與死亡狀態 |
+| `condition` | `Condition`。`None` = 無條件 |
+| `effect` | `Effect`。`None` = 什麼都不做 |
+| `sequence` | 同一個掛載點內的執行順序，小的先跑。每個房間各自獨立計算 |
+| `limit` | 最多觸發幾次，用完自動死亡。預設 `1`，`None` = 無限次 |
+| `stop` | 這個事件觸發後，就不再檢查後面的 |
+| `trigger` | 觸發時機。不填就由掛載位置決定（`Room` → 進房，`Hotspot` → 點擊） |
+
+**符合條件的事件會依 `sequence` 全部執行**，除非某個設了 `stop`。
+死掉的事件會被直接跳過，連條件都不求值 —— 所以檢查成本會隨遊戲進行遞減。
+
+### Condition
+
+```renpy
+Condition(
+    require=["key", "map"],          # 全部都要有（AND）
+    require_any=["axe", "crowbar"],  # 至少要有一個（OR）
+    forbid=["saw_ghost"],            # 全部都不能有（NOT）
+    check=lambda v: v.item_count("coin") >= 3,   # 逃生艙
+)
+```
+
+四個欄位都不填 = 無條件通過。單一項目可以直接寫字串不用包 list。
+
+**物品與旗標共用同一個命名空間** —— `require=["key"]` 會同時查物品欄和旗標，
+有一邊算「有」就算通過。寫條件時不用記住每個 key 屬於哪一類，
+代價是物品與旗標不能取同樣的名字。
+
+`check` 收到的是 `StateView`（唯讀），可用 `has` / `has_item` / `has_flag` /
+`item_count` / `event_count` / `is_event_dead`。
+
+### Effect
+
+```renpy
+Effect(
+    give_items=["key", ("coin", 5)],   # 支援 (key, 數量)
+    remove_items=["torch"],
+    set_flags=["opened_drawer"],
+    clear_flags=["is_hiding"],
+    kill_events=["hall.ghost_warn"],   # 讓別的事件提前失效，可跨房間
+    label="found_key",                 # 狀態改完才跑
+)
+```
+
+六個欄位全都是改 `GameState`。執行順序由引擎固定（給物品 → 拿物品 → 設旗標 →
+清旗標 → 殺事件 → 跑 label），因為它們彼此不相依，順序不影響結果。
+
+**刻意沒有 `change_room` 和熱點顯隱**：換房間寫在 label 裡順序才自然；
+熱點顯隱用 `Hotspot.condition` 由條件推導，才不會被「重新載入房間資料」洗掉。
+
+### 進房事件
+
+`Room` 的 `on_enter` 就是簡寫，內部轉成一個 `id` 為 `"房間名.on_enter"`、
+`sequence=-1000`（排最前面）的無條件 Event。需要條件分支時直接用 `Room(events=[...])`。
+
+### 狀態存在哪裡
+
+觸發次數與死亡名單存在 `game_state.events`，**不在 Event 物件上**。
+因為 Event 跟 Room 一樣是 `build_rooms()` 產生的靜態定義，
+按「重新載入房間資料」時會被整個重建 —— 狀態記在物件上就會跟著歸零。
+
+---
+
+## 物品與物品欄
+
+### 定義物品
+
+`game/explore_demo/items.rpy`：
+
+```renpy
+init python:
+    def build_items():
+        items = {}
+
+        items["key"] = Item(
+            key="key",
+            name="生鏽的鑰匙",
+            description="一把沾滿鏽的舊鑰匙。\n看起來能開某個櫃子。",
+            icon=None,       # 可以是圖片路徑或任何 displayable
+            tag="鑰匙",       # 自訂分類，引擎不碰它
+        )
+
+        return items
+
+define item_catalog = build_items()
+```
+
+**注意是 `define` 不是 `default`。** 物品目錄是純靜態定義，
+玩家有幾把鑰匙記在 `GameState.inventory`，不在這裡。
+用 `define` 就不會進存檔 —— 改了物品名稱或描述，連舊存檔都會馬上吃到新的。
+用 `default` 的話會重蹈 `rooms` 的覆轍（改了定義要重開新遊戲才看得到）。
+
+### 給予與檢查
+
+```renpy
+Effect(give_items=["key"])           # 給一個
+Effect(give_items=[("coin", 5)])     # 給五個
+Effect(remove_items=["torch"])       # 拿走
+
+Condition(require=["key"])           # 檢查有沒有
+Condition(check=lambda v: v.item_count("coin") >= 3)   # 檢查數量
+```
+
+### 撿取物品的完整寫法
+
+```renpy
+Hotspot(name="key_pickup", x=2400, y=620, label="🔑 生鏽的鑰匙",
+        condition=Condition(forbid=["key"]),      # 撿走之後自動消失
+        events=[
+            Event(id="demo_room.pick_key",
+                  effect=Effect(give_items=["key"], label="demo_pick_key")),
+        ])
+
+label demo_pick_key:
+    "你撿起了一把生鏽的鑰匙。"
+    return
+```
+
+`condition=Condition(forbid=["key"])` 這行是重點：**撿走之後熱點自動消失**，
+不需要在 label 裡呼叫 `hide()`。讀舊存檔、按「重新載入房間資料」都不會
+讓已經撿過的東西又冒出來，因為顯示與否完全由 `GameState` 推導。
+
+### 物品欄畫面
+
+`explore()` 已經 `use inventory_display` 了，會顯示在**右上角**
+（左上角留給 F9 的 debug 面板）。
+
+物品欄裡只存 key 與數量，畫面上的名稱與圖示都是即時查 `item_catalog`。
+數量大於 1 時會顯示 `×N`。點一下物品會用翻頁視窗顯示它的 `description`。
 
 ---
 
@@ -332,14 +545,14 @@ label show_help:
 
 ```renpy
 Hotspot(name="help", x=1500, y=880, label="📖 看說明",
-        action=Call("demo_show_help"))
+        on_click="demo_show_help")
 ```
 
 ---
 
 ## 自動化測試
 
-`game/explore_demo/tests.rpy` 有六份測試，在 SDK 目錄下執行：
+`game/explore_demo/tests.rpy` 有十份測試，在 SDK 目錄下執行：
 
 ```
 renpy.exe <專案路徑> test <測試名稱>
@@ -353,6 +566,10 @@ renpy.exe <專案路徑> test <測試名稱>
 | `regression_fixes` | 已修 bug 的回歸：對話結束後對話框要收起來、F10 釘住的座標不隨鏡頭移動而改變 |
 | `popup_edge_cases` | ESC 關閉、單頁時翻頁鈕消失、空頁面不會爆掉 |
 | `hotspot_visibility` | `hide()` / `show()` 之後畫面上是不是真的看不到／看得到 |
+| `state_checks` | `InventoryState` / `FlagState` / `EventState` / `GameState` / `StateView` 的純邏輯 |
+| `event_checks` | `Condition` 四種欄位、`Effect` 六種改動、`collect_events` 的排序／stop／死亡／trigger 過濾 |
+| `inventory_flow` | 撿鑰匙 → 熱點自動消失 → 物品欄出現 → 開櫃子拿紙條 → 再點變空的 |
+| `locked_without_key` | 同一個熱點在沒鑰匙時走另一條分支，且條件不符的事件不該被算成觸發過 |
 
 結果寫在專案根目錄的 `log.txt`（搜尋 `[rpytest]`），
 每個步驟的狀態則寫在 `test_trace.txt`。

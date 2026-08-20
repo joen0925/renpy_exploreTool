@@ -56,7 +56,9 @@ screen explore():
                 $ w = hotspot.width if hotspot.width else 100
                 $ h = hotspot.height if hotspot.height else 100
 
-                if hotspot.visible:
+                # visible 是手動開關，condition 是由遊戲狀態推導的顯示條件，
+                # 兩個都成立才畫出來。condition 只讀不寫，每幀求值也安全。
+                if hotspot_is_shown(hotspot):
                     if hotspot.label:
                         # 文字/emoji 熱點 (例如撿取物品用的 "🔑 點我拿取鑰匙")
                         textbutton hotspot.label:
@@ -93,3 +95,7 @@ screen explore():
                             add Transform(hotspot.hover, xysize=(w, h)):
                                 xpos hotspot.x
                                 ypos hotspot.y
+
+    # 右上角物品欄。放在 fixed 外面，所以不會跟著鏡頭移動。
+    # (左上角留給 F9 的 debug 標點面板)
+    use inventory_display

@@ -45,7 +45,7 @@ init python:
             x=520,
             y=500,
             label="🪧 讀看板",
-            action=Call("say_in_room", "demo_look_sign"),
+            on_click="demo_look_sign",
         ))
 
         # 方框熱點：沒有 idle/hover 圖，開 debug=True 用紅框標出判定範圍
@@ -56,7 +56,7 @@ init python:
             width=240,
             height=200,
             debug=True,
-            action=Call("say_in_room", "demo_look_box"),
+            on_click="demo_look_box",
         ))
 
         # 靠右邊的熱點：要把鏡頭往右掃才看得到，用來驗證鏡頭與熱點座標有沒有對齊
@@ -65,7 +65,7 @@ init python:
             x=2900,
             y=460,
             label="🚪 遠處的門",
-            action=Call("say_in_room", "demo_look_door"),
+            on_click="demo_look_door",
         ))
 
         # 開啟翻頁視窗的熱點。
@@ -76,7 +76,7 @@ init python:
             x=1500,
             y=880,
             label="📖 看說明",
-            action=Call("demo_show_help"),
+            on_click="demo_show_help",
         ))
 
         # 切換到另一個房間的熱點：切房間要包成 label 再用 Call，
@@ -86,17 +86,17 @@ init python:
             x=1100,
             y=760,
             label="🍳 走去廚房",
-            action=Call("say_in_room", "demo_go_kitchen"),
+            on_click="demo_go_kitchen",
         ))
 
         room.add_hotspot(Hotspot(
-            name="for_test",
+            name="to_bed_room",
+            label="前往休息屋",
             x=1204,
             y=537,
             width=240,
             height=200,
-            debug=True,
-            action=Call("say_in_room", "test"),
+            on_click="demo_go_bed_room",
         ))
 
         room.add_hotspot(Hotspot(
@@ -106,7 +106,28 @@ init python:
             width=240,
             height=200,
             debug=True,
-            action=Call("demo_show_test"),
+            on_click="demo_show_test",
+        ))
+
+        # 撿取物品的熱點。
+        #
+        # condition 設成「沒有 key 才顯示」，所以撿走之後這個熱點自動消失 ——
+        # 不需要任何人去呼叫 hide()。
+        # 這樣讀舊存檔、按「重新載入房間資料」都不會讓已經撿過的東西又冒出來，
+        # 因為顯示與否完全由 GameState 推導。
+        room.add_hotspot(Hotspot(
+            name="key_pickup",
+            x=2400,
+            y=620,
+            label="🔑 生鏽的鑰匙",
+            condition=Condition(forbid=["key"]),
+            events=[
+                Event(
+                    id="demo_room.pick_key",
+                    effect=Effect(give_items=["key"], label="demo_pick_key"),
+                    limit=None,
+                ),
+            ],
         ))
 
         return room
@@ -138,8 +159,13 @@ label demo_go_kitchen:
     $ change_room("kitchen")
     return
 
-label test:
-    "測試說話"
+label demo_pick_key:
+    "你撿起了一把生鏽的鑰匙。"
+    return
+
+label demo_go_bed_room:
+    "你往休息室移動。"
+    $ change_room("bed_room")
     return
 
 ##################################################
