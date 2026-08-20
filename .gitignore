@@ -32,3 +32,6 @@
 # Claude Code 的工作設定與初始化模板 (不納入版控)
 /.claude/
 /claude_init/
+
+# 待實作項目清單 (開發過程的備忘，不納入版控)
+/pending_imp.md

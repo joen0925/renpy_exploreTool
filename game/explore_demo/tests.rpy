@@ -272,6 +272,276 @@ testcase unit_checks:
     $ assert _h2.data == {}, "兩個 Hotspot 不該共用同一個 data dict"
 
 
+# GameState 三個 section 的純邏輯測試。
+# 這些都是自己建物件來測，不碰全域的 game_state，也不需要畫面。
+testcase state_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- InventoryState：只存 key -> 數量 ---
+
+    $ _inv = InventoryState()
+    $ assert not _inv.has("key"), "一開始不該有東西"
+    $ assert _inv.count_of("key") == 0, "沒有的物品數量應該是 0"
+
+    $ _inv.add("key")
+    $ assert _inv.has("key") and _inv.count_of("key") == 1
+
+    # 同一個 key 再加會累加，不是覆蓋
+    $ _inv.add("key", 2)
+    $ assert _inv.count_of("key") == 3, f"應該累加成 3，實際 {_inv.count_of('key')}"
+
+    # 移除一部分
+    $ _inv.remove("key", 1)
+    $ assert _inv.count_of("key") == 2
+
+    # 移到 0 就整個消失，不留空殼
+    $ _inv.remove("key", 99)
+    $ assert not _inv.has("key"), "數量歸零後應該整個移除"
+    $ assert "key" not in _inv.items, "不該留下數量為 0 的空殼"
+
+    # 移除不存在的東西不該出錯
+    $ _inv.remove("nothing")
+
+    # 加 0 個或負數不該有作用
+    $ _inv.add("ghost", 0)
+    $ assert not _inv.has("ghost"), "加 0 個不該產生物品"
+
+    $ _inv.add("a")
+    $ _inv.reset()
+    $ assert _inv.keys() == [], "reset 之後應該清空"
+
+    # --- FlagState ---
+
+    $ _flags = FlagState()
+    $ assert not _flags.has("cut_wire")
+
+    $ _flags.set("cut_wire")
+    $ assert _flags.has("cut_wire")
+
+    # 重複 set 不該出錯，也不會變成兩個
+    $ _flags.set("cut_wire")
+    $ assert _flags.all_flags() == ["cut_wire"]
+
+    $ _flags.clear("cut_wire")
+    $ assert not _flags.has("cut_wire")
+
+    # 清除不存在的旗標不該出錯
+    $ _flags.clear("never_set")
+
+    $ _flags.set("a")
+    $ _flags.reset()
+    $ assert _flags.all_flags() == []
+
+    # --- EventState：觸發次數與死亡 ---
+
+    $ _ev = EventState()
+    $ assert _ev.count_of("e1") == 0
+    $ assert not _ev.is_dead("e1")
+
+    # limit=2：觸發一次還活著，第二次就死
+    $ _ev.record_trigger("e1", 2)
+    $ assert _ev.count_of("e1") == 1
+    $ assert not _ev.is_dead("e1"), "limit=2 觸發一次還不該死"
+
+    $ _ev.record_trigger("e1", 2)
+    $ assert _ev.count_of("e1") == 2
+    $ assert _ev.is_dead("e1"), "次數用完應該自動死亡"
+
+    # limit=None：無限次，永遠不會因為次數而死
+    $ _ev.record_trigger("e2", None)
+    $ _ev.record_trigger("e2", None)
+    $ _ev.record_trigger("e2", None)
+    $ assert _ev.count_of("e2") == 3
+    $ assert not _ev.is_dead("e2"), "limit=None 不該因為次數而死"
+
+    # 可以被別人提前殺死
+    $ _ev.kill("e2")
+    $ assert _ev.is_dead("e2")
+
+    # 也可以復活
+    $ _ev.revive("e2")
+    $ assert not _ev.is_dead("e2")
+
+    $ _ev.reset()
+    $ assert _ev.count_of("e1") == 0 and not _ev.is_dead("e1")
+
+    # --- GameState 與 StateView ---
+
+    $ _gs = GameState()
+    $ _gs.inventory.add("key")
+    $ _gs.flags.set("opened_door")
+
+    $ _view = _gs.view()
+
+    $ assert _view.has_item("key")
+    $ assert _view.has_flag("opened_door")
+    $ assert _view.item_count("key") == 1
+
+    # 物品與旗標共用命名空間：has() 兩邊都查
+    $ assert _view.has("key"), "has() 應該查得到物品"
+    $ assert _view.has("opened_door"), "has() 應該查得到旗標"
+    $ assert not _view.has("nothing")
+
+    # StateView 是唯讀的：不該有任何會改狀態的方法
+    $ assert not hasattr(_view, "add"), "StateView 不該暴露 add"
+    $ assert not hasattr(_view, "set"), "StateView 不該暴露 set"
+    $ assert not hasattr(_view, "remove"), "StateView 不該暴露 remove"
+
+    # reset 要能一次清掉所有 section
+    $ _gs.reset()
+    $ assert not _gs.view().has("key") and not _gs.view().has("opened_door"), "reset 應該清掉所有 section"
+
+
+# 事件系統的純邏輯測試：Condition / Effect / collect_events。
+# collect_events 是純函式，餵假的 GameState 就能測，不需要畫面。
+testcase event_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- Condition ---
+
+    $ _gs = GameState()
+    $ _gs.inventory.add("key")
+    $ _gs.flags.set("saw_ghost")
+    $ _v = _gs.view()
+
+    # 沒設任何欄位 = 無條件通過
+    $ assert Condition().test(_v), "空條件應該永遠通過"
+
+    # require：全部都要有
+    $ assert Condition(require=["key"]).test(_v)
+    $ assert not Condition(require=["key", "map"]).test(_v), "缺一個就不該通過"
+
+    # 可以直接傳字串，不用包 list
+    $ assert Condition(require="key").test(_v), "require 應該接受字串"
+
+    # 物品與旗標共用命名空間
+    $ assert Condition(require=["saw_ghost"]).test(_v), "require 應該也查得到旗標"
+
+    # require_any：至少要有一個
+    $ assert Condition(require_any=["axe", "key"]).test(_v)
+    $ assert not Condition(require_any=["axe", "crowbar"]).test(_v)
+
+    # forbid：都不能有
+    $ assert Condition(forbid=["ghost"]).test(_v)
+    $ assert not Condition(forbid=["key"]).test(_v), "有被禁止的東西就不該通過"
+
+    # 三者是 AND 關係
+    $ assert not Condition(require=["key"], forbid=["saw_ghost"]).test(_v)
+
+    # check 逃生艙
+    $ _gs.inventory.add("coin", 3)
+    $ assert Condition(check=lambda v: v.item_count("coin") >= 3).test(_gs.view())
+    $ assert not Condition(check=lambda v: v.item_count("coin") >= 4).test(_gs.view())
+
+    # --- Effect ---
+
+    $ _gs2 = GameState()
+    $ _eff = Effect(give_items=["key", ("coin", 5)], set_flags=["opened"], label="say_hi")
+    $ _label = _eff.apply(_gs2)
+
+    $ assert _label == "say_hi", "apply 應該回傳 label"
+    $ assert _gs2.inventory.count_of("key") == 1
+    $ assert _gs2.inventory.count_of("coin") == 5, "應該支援 (key, 數量) 寫法"
+    $ assert _gs2.flags.has("opened")
+
+    # 移除與清除
+    $ Effect(remove_items=[("coin", 2)], clear_flags=["opened"]).apply(_gs2)
+    $ assert _gs2.inventory.count_of("coin") == 3
+    $ assert not _gs2.flags.has("opened")
+
+    # kill_events
+    $ Effect(kill_events=["some.event"]).apply(_gs2)
+    $ assert _gs2.events.is_dead("some.event")
+
+    # 沒有 label 的 Effect 回傳 None
+    $ assert Effect(set_flags=["x"]).apply(_gs2) is None
+
+    # --- collect_events：排序 ---
+
+    $ _gs3 = GameState()
+    $ _ctx = EventContext(_gs3)
+    python:
+        _events = [
+            Event(id="t.c", sequence=30, effect=Effect(label="third"), limit=None),
+            Event(id="t.a", sequence=10, effect=Effect(label="first"), limit=None),
+            Event(id="t.b", sequence=20, effect=Effect(label="second"), limit=None),
+        ]
+    $ _labels = collect_events(_events, TriggerType.ENTER_ROOM, _ctx, TriggerType.ENTER_ROOM)
+    $ assert _labels == ["first", "second", "third"], f"應該依 sequence 排序，實際 {_labels}"
+
+    # --- collect_events：stop 中斷後續 ---
+
+    $ _gs4 = GameState()
+    $ _ctx4 = EventContext(_gs4)
+    python:
+        _events4 = [
+            Event(id="s.a", sequence=10, effect=Effect(label="a"), stop=True, limit=None),
+            Event(id="s.b", sequence=20, effect=Effect(label="b"), limit=None),
+        ]
+    $ _labels4 = collect_events(_events4, TriggerType.ENTER_ROOM, _ctx4, TriggerType.ENTER_ROOM)
+    $ assert _labels4 == ["a"], f"stop 之後不該再檢查，實際 {_labels4}"
+    $ assert _gs4.events.count_of("s.b") == 0, "被 stop 擋掉的事件不該記錄觸發"
+
+    # --- collect_events：次數用完自動死亡，之後直接跳過 ---
+
+    $ _gs5 = GameState()
+    $ _ctx5 = EventContext(_gs5)
+    $ _events5 = [Event(id="l.a", effect=Effect(label="once"), limit=1)]
+
+    $ assert collect_events(_events5, TriggerType.ENTER_ROOM, _ctx5, TriggerType.ENTER_ROOM) == ["once"]
+    $ assert _gs5.events.is_dead("l.a"), "limit=1 觸發後應該死亡"
+    $ assert collect_events(_events5, TriggerType.ENTER_ROOM, _ctx5, TriggerType.ENTER_ROOM) == [], "死掉之後不該再觸發"
+
+    # --- collect_events：條件不符就跳過，而且不該記錄觸發次數 ---
+
+    $ _gs6 = GameState()
+    $ _ctx6 = EventContext(_gs6)
+    $ _events6 = [Event(id="c.a", condition=Condition(require=["key"]), effect=Effect(label="x"), limit=None)]
+
+    $ assert collect_events(_events6, TriggerType.ENTER_ROOM, _ctx6, TriggerType.ENTER_ROOM) == []
+    $ assert _gs6.events.count_of("c.a") == 0, "條件不符不該算觸發過"
+
+    $ _gs6.inventory.add("key")
+    $ assert collect_events(_events6, TriggerType.ENTER_ROOM, _ctx6, TriggerType.ENTER_ROOM) == ["x"]
+
+    # --- collect_events：前面的 Effect 要能影響後面的 Condition ---
+    # 這是刻意的設計：同一次派發裡，撿到鑰匙的下一個事件就該看得到鑰匙
+
+    $ _gs7 = GameState()
+    $ _ctx7 = EventContext(_gs7)
+    python:
+        _events7 = [
+            Event(id="chain.give", sequence=10, effect=Effect(give_items=["key"]), limit=None),
+            Event(id="chain.use", sequence=20, condition=Condition(require=["key"]), effect=Effect(label="used"), limit=None),
+        ]
+    $ _labels7 = collect_events(_events7, TriggerType.ENTER_ROOM, _ctx7, TriggerType.ENTER_ROOM)
+    $ assert _labels7 == ["used"], f"後面的條件應該看得到前面 Effect 的改動，實際 {_labels7}"
+
+    # --- collect_events：trigger 過濾 ---
+
+    $ _gs8 = GameState()
+    $ _ctx8 = EventContext(_gs8)
+    python:
+        _events8 = [
+            Event(id="tr.enter", effect=Effect(label="on_enter"), limit=None),
+            Event(id="tr.click", trigger=TriggerType.CLICK_HOTSPOT, effect=Effect(label="on_click"), limit=None),
+        ]
+
+    # 沒指定 trigger 的用掛載位置的預設值
+    $ _r8 = collect_events(_events8, TriggerType.ENTER_ROOM, _ctx8, TriggerType.ENTER_ROOM)
+    $ assert _r8 == ["on_enter"], f"只該跑符合時機的，實際 {_r8}"
+
+    $ _r8b = collect_events(_events8, TriggerType.CLICK_HOTSPOT, _ctx8, TriggerType.ENTER_ROOM)
+    $ assert _r8b == ["on_click"], f"明確指定 trigger 的應該只在該時機跑，實際 {_r8b}"
+
+    # --- 空清單不該出錯 ---
+
+    $ assert collect_events(None, TriggerType.ENTER_ROOM, _ctx8) == []
+    $ assert collect_events([], TriggerType.ENTER_ROOM, _ctx8) == []
+
+
 # 已經修好的 bug 的回歸測試。
 # 這兩個問題都是實際發生過、使用者回報的，所以留下測試防止再犯。
 testcase regression_fixes:
