@@ -38,6 +38,16 @@ init python:
         current_room = room_target
         camera.enter_room(current_room)
 
+        # 房間背景音樂。
+        #
+        # music 是 None 的房間完全不碰音樂 —— 維持現在正在播的那首。
+        # 這樣共用同一首 BGM 的房間不用每間都填，想安靜下來時
+        # 自己在 label 裡呼叫 renpy.music.stop() 即可。
+        #
+        # if_changed=True：同一首歌不會因為走進走出而從頭重播。
+        if current_room.music:
+            renpy.music.play(current_room.music, if_changed=True)
+
         # 派發進房事件。
         # 第一階段是純 Python：檢查條件、改狀態、收集要跑的 label。
         context = EventContext(store.game_state, current_room)

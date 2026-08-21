@@ -110,6 +110,39 @@ testcase explore_smoke:
     $ _trace("6_第四次互動完成")
     $ assert current_room.name == "kitchen", "第四次互動仍應正常運作"
 
+    # --- Room.music 的播放規則 ---
+    #
+    # 規則是「music=None 就完全不碰音樂，維持現在正在播的那首」。
+    #
+    # demo 專案裡沒有任何音檔可以真的播出來，
+    # 所以這裡改用替身攔截 renpy.music.play，
+    # 驗證的是「有沒有被呼叫、帶了什麼參數」這個契約本身。
+    # 放在最後面，因為它會把 current_room 換成臨時房間。
+    python:
+        # 記錄用的清單放在 store 上，不能用區域變數 ——
+        # 測試裡的 python 區塊是用獨立的 globals/locals 執行的，
+        # 下面那個 lambda 之後被 change_room 呼叫時查不到區域變數。
+        store._music_calls = []
+
+        _orig_music_play = renpy.music.play
+        renpy.music.play = lambda *a, **kw: store._music_calls.append((a, kw))
+
+        # 借用現有房間的背景，避免 background=None 讓畫面畫不出來
+        _bg = current_room.background
+
+        try:
+            change_room(Room(name="_music_none", background=_bg, music=None))
+            assert store._music_calls == [], "music=None 的房間不該碰音樂"
+
+            change_room(Room(name="_music_set", background=_bg, music="bgm.ogg"))
+            assert len(store._music_calls) == 1, f"有設 music 的房間應該播放一次，實際 {len(store._music_calls)} 次"
+            assert store._music_calls[0][0][0] == "bgm.ogg", "應該播放房間指定的那首"
+            assert store._music_calls[0][1].get("if_changed") is True, "應該用 if_changed，同一首不該從頭重播"
+        finally:
+            renpy.music.play = _orig_music_play
+
+    $ _trace("7_music規則驗證完成")
+
 
 # 翻頁視窗 (page_popup) 與 debug 標點面板 (explore_debug) 的測試。
 testcase popup_and_debug:
@@ -256,22 +289,75 @@ testcase unit_checks:
     # --- Hotspot 的狀態方法 ---
 
     $ _h = Hotspot(name="h", x=0, y=0)
-    $ assert _h.visible and _h.enabled, "預設應該是可見且可用"
+    $ assert _h.visible, "預設應該是可見的"
 
     $ _h.hide()
     $ assert not _h.visible, "hide() 之後 visible 應該是 False"
     $ _h.show()
     $ assert _h.visible, "show() 之後 visible 應該是 True"
 
-    $ _h.disable()
-    $ assert not _h.enabled, "disable() 之後 enabled 應該是 False"
-    $ _h.enable()
-    $ assert _h.enabled, "enable() 之後 enabled 應該是 True"
-
     # 每個 Hotspot 要有自己的 data dict
     $ _h2 = Hotspot(name="h2", x=0, y=0)
     $ _h.data["k"] = 1
     $ assert _h2.data == {}, "兩個 Hotspot 不該共用同一個 data dict"
+
+    # --- 熱點大小 (hotspot_size) ---
+
+    # 沒填 width/height 就用預設值
+    $ assert hotspot_size(Hotspot(name="s", x=0, y=0)) == (100, 100), "預設判定範圍應該是 100x100"
+
+    # 有填就用填的
+    $ assert hotspot_size(Hotspot(name="s", x=0, y=0, width=300, height=80)) == (300, 80)
+
+    # 只填一邊，另一邊仍然用預設值
+    $ assert hotspot_size(Hotspot(name="s", x=0, y=0, width=300)) == (300, 100)
+    $ assert hotspot_size(Hotspot(name="s", x=0, y=0, height=80)) == (100, 80)
+
+    # --- hover 判定 (hotspot_contains) ---
+    #
+    # 這是圖片熱點決定「hover 圖要不要畫出來」的依據，
+    # 探索畫面每一幀都會算一次。
+    #
+    # 傳進去的是背景圖座標，不是螢幕座標：
+    # 呼叫端 (explore 畫面) 會先算 room_x = mouse_x - camera.offset。
+    # 這裡直接餵座標測，是因為測試環境沒辦法可靠地控制真實滑鼠位置。
+
+    $ _box = Hotspot(name="box", x=200, y=300, width=100, height=50)
+
+    # 正中央：命中
+    $ assert hotspot_contains(_box, 250, 325), "範圍正中央應該命中"
+
+    # 左上角是包含的 (>=)
+    $ assert hotspot_contains(_box, 200, 300), "左上角座標應該算在範圍內"
+
+    # 右下角是不包含的 (<)，剛好在邊界外面一格
+    $ assert not hotspot_contains(_box, 300, 350), "右下邊界應該算在範圍外"
+
+    # 邊界內側最後一格：命中
+    $ assert hotspot_contains(_box, 299, 349), "邊界內側最後一格應該命中"
+
+    # 四個方向各差一格就落空
+    $ assert not hotspot_contains(_box, 199, 325), "左邊差一格應該落空"
+    $ assert not hotspot_contains(_box, 250, 299), "上面差一格應該落空"
+    $ assert not hotspot_contains(_box, 300, 325), "右邊差一格應該落空"
+    $ assert not hotspot_contains(_box, 250, 350), "下面差一格應該落空"
+
+    # 完全不相干的座標
+    $ assert not hotspot_contains(_box, 0, 0), "遠處座標不該命中"
+
+    # 沒填寬高的熱點，用預設的 100x100 判定
+    $ _dot = Hotspot(name="dot", x=0, y=0)
+    $ assert hotspot_contains(_dot, 99, 99), "預設範圍內應該命中"
+    $ assert not hotspot_contains(_dot, 100, 100), "超出預設範圍應該落空"
+
+    # 鏡頭位移之後的行為：
+    # 熱點畫在背景圖的 x=200，鏡頭往左推 640，
+    # 玩家滑鼠停在螢幕 x=-440+640... 直接用呼叫端的算式驗證一次，
+    # 確認「螢幕座標扣掉 offset」才是正確的輸入。
+    $ _offset = -640
+    $ _screen_x = 200 + _offset          # 熱點左上角這時出現在螢幕上的哪裡
+    $ assert hotspot_contains(_box, _screen_x - _offset, 300), "扣掉鏡頭位移後應該命中"
+    $ assert not hotspot_contains(_box, _screen_x, 300), "忘了扣鏡頭位移就會判定錯"
 
 
 # GameState 三個 section 的純邏輯測試。

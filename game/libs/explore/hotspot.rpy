@@ -2,7 +2,7 @@
 #
 #	互動點
 # 	屬性:背景、大小、各種hotspots位置
-#   方法:顯示、隱藏、可用、不可用
+#   方法:顯示、隱藏
 #
 #   點擊行為有兩種寫法，簡單的用 on_click，需要條件分支的用 events：
 #
@@ -55,7 +55,6 @@ init python:
             condition=None,
 
             visible=True,
-            enabled=True,
 
             width=None,
             height=None,
@@ -98,7 +97,6 @@ init python:
 
             # 狀態
             self.visible = visible
-            self.enabled = enabled
 
             # 判定範圍(需要時才用)
             self.width = width
@@ -132,11 +130,37 @@ init python:
         def hide(self):
             self.visible = False
 
-        def enable(self):
-            self.enabled = True
 
-        def disable(self):
-            self.enabled = False
+    # 沒指定 width/height 時的預設判定範圍 (像素)
+    HOTSPOT_DEFAULT_SIZE = 100
+
+
+    def hotspot_size(hotspot):
+        """
+        這個熱點的判定範圍大小 (寬, 高)。沒指定就用預設值。
+        """
+        w = hotspot.width if hotspot.width else HOTSPOT_DEFAULT_SIZE
+        h = hotspot.height if hotspot.height else HOTSPOT_DEFAULT_SIZE
+        return (w, h)
+
+
+    def hotspot_contains(hotspot, room_x, room_y):
+        """
+        指定的座標有沒有落在這個熱點的判定範圍內。
+
+        座標是「背景圖座標」，不是螢幕座標 ——
+        呼叫端要先自己把鏡頭位移扣掉 (room_x = mouse_x - camera.offset)。
+        y 不用扣，因為鏡頭只做水平位移。
+
+        探索畫面每一幀都會用這個判定 hover 圖要不要畫出來。
+        抽成獨立函式是為了能直接餵座標測試 ——
+        測試環境沒辦法可靠地控制真實滑鼠位置。
+        """
+        w, h = hotspot_size(hotspot)
+        return (
+            hotspot.x <= room_x < hotspot.x + w
+            and hotspot.y <= room_y < hotspot.y + h
+        )
 
 
     def hotspot_is_shown(hotspot):

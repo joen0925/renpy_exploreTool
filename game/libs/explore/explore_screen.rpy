@@ -52,9 +52,8 @@ screen explore():
             # 2. 顯示熱點：可以直接使用絕對座標 hotspot.x / hotspot.y
             # 不需要手動加 camera.offset，因為外層的 fixed 已經幫忙位移了！
             for hotspot in current_room.hotspots:
-                # 取得熱點寬高（若未指定則預設 100x100）
-                $ w = hotspot.width if hotspot.width else 100
-                $ h = hotspot.height if hotspot.height else 100
+                # 取得熱點寬高（若未指定則用預設值）
+                $ w, h = hotspot_size(hotspot)
 
                 # visible 是手動開關，condition 是由遊戲狀態推導的顯示條件，
                 # 兩個都成立才畫出來。condition 只讀不寫，每幀求值也安全。
@@ -91,7 +90,7 @@ screen explore():
 
                         # hover 圖示：每一幀都用「目前滑鼠的房間座標」即時判定是否落在範圍內
                         # 鏡頭移動或滑鼠離開，下一幀就會馬上消失，不會卡住
-                        if hotspot.hover and (hotspot.x <= room_x < hotspot.x + w) and (hotspot.y <= mouse_y < hotspot.y + h):
+                        if hotspot.hover and hotspot_contains(hotspot, room_x, mouse_y):
                             add Transform(hotspot.hover, xysize=(w, h)):
                                 xpos hotspot.x
                                 ypos hotspot.y

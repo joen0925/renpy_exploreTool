@@ -99,7 +99,7 @@ Room(
     on_enter="kitchen_enter", # 進來時跑的 label
     on_enter_limit=1,         # on_enter 最多觸發幾次
     events=[...],             # 需要條件分支的進房事件
-    music=None,               # 尚未實作，填了不會播放
+    music=None,               # 進房時播的 BGM。None = 不碰音樂，維持現在那首
     hotspots=[...],           # 也可以建立後用 add_hotspot() 一個個加
 )
 ```
@@ -211,7 +211,10 @@ Hotspot(
 ```
 
 方法：`show()` / `hide()` / `add_event(e)`
-（`enable()` / `disable()` 目前沒有作用，見 README）
+
+> 沒有「可以點／不能點」的開關。要控制熱點能不能互動請用 `condition` ——
+> 條件是由狀態推導的，reload 與讀存檔都會自己算對；
+> 手動旗標要靠「當初有沒有執行到」來維持，會遇到跟 `hide()` 一樣的問題。
 
 ### 外觀三選一的差別
 

@@ -127,7 +127,7 @@ label go_to_kitchen:
 | `name` | 是 | 房間名稱，建議跟 `rooms` 字典的 key 取一樣 |
 | `background` | 是 | 背景圖，可以是圖片路徑字串或任何 Ren'Py displayable |
 | `bg_width` | | 背景圖實際寬度，預設 1920。**填錯鏡頭範圍就會錯** |
-| `music` | | v0.1 尚未實作，填了不會播放 |
+| `music` | | 進入房間時播放的背景音樂檔。**`None` 完全不碰音樂**，維持現在正在播的那首 |
 | `hotspots` | | 熱點列表，也可以建立後用 `add_hotspot()` 一個個加 |
 | `on_enter` | | 進入房間時自動呼叫的 label 名稱（字串） |
 | `on_enter_limit` | | `on_enter` 最多觸發幾次，**預設 1**（只有第一次進來會講）。`None` = 每次都觸發，`2` = 前兩次都講 |
@@ -182,10 +182,21 @@ Hotspot(name="lamp", x=800, y=600, width=200, height=300,
 | `condition` | 顯示條件（`Condition`）。條件不成立時這個熱點不會出現 |
 | `sound` | 點擊音效，用按鈕內建的 `activate_sound` 播放 |
 | `visible` | 手動顯示開關，預設 `True`。與 `condition` 是 AND 關係 |
-| `enabled` | **尚未接上**，改了不會有效果 |
 
 `on_click` 與 `events` 可以同時存在，`events` 先跑、`on_click` 後跑。
 但多數情況只需要其中一個。
+
+### 房間音樂
+
+```renpy
+Room(name="basement", background="basement.png", music="audio/creepy.ogg")
+```
+
+規則只有一條：**`music=None` 就完全不碰音樂。**
+
+所以共用同一首 BGM 的一整片房間，只要在玩家第一次進去的那間填就好，
+中間走來走去都不會從頭重播（內部用 `if_changed=True`）。
+想安靜下來的時候，自己在 label 裡呼叫 `renpy.music.stop()`。
 
 ### 用條件控制顯示，不要用 hide()
 
