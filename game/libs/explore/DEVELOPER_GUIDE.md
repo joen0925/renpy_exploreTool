@@ -14,6 +14,7 @@
 - [Condition 條件](#condition-條件)
 - [Effect 結果](#effect-結果)
 - [Item 物品](#item-物品)
+- [角色數值與死亡](#角色數值與死亡)
 - [常見情境食譜](#常見情境食譜)
 - [常見錯誤](#常見錯誤)
 
@@ -63,6 +64,10 @@ label bedroom_look_bed:
 ```renpy
 rooms["bedroom"] = build_bedroom()
 ```
+
+> 房間檔的檔名怎麼取都可以。房間清單用 `init 1 python:` 建立，
+> 保證在所有房間檔都載入完之後才跑。**不要**把它改回 `default` 或 `define` ——
+> 理由見 [README 的「什麼會進存檔，什麼不會」](README.md#什麼會進存檔什麼不會)。
 
 **3. 用** — `$ change_room("bedroom")`
 
@@ -519,12 +524,16 @@ Effect(
     set_flags=["opened_drawer"],       # 設旗標
     clear_flags=["is_hiding"],         # 清旗標
     kill_events=["hall.ghost_warn"],   # 讓別的事件永久失效，可跨房間
+
+    stats={"hp": -1},                  # 角色數值的增減量
+    actor="player",                    # stats 要改到誰身上。有 stats 就必填
+
     label="found_key",                 # 狀態改完才跑這個 label
 )
 ```
 
-六個欄位全都是改 `GameState`。執行順序由引擎固定，你不用管
-（給物品 → 拿物品 → 設旗標 → 清旗標 → 殺事件 → 跑 label）。
+除了 `label` 之外全都是改 `GameState`。執行順序由引擎固定，你不用管
+（給物品 → 拿物品 → 設旗標 → 清旗標 → 殺事件 → 改數值 → 跑 label）。
 
 ### 為什麼沒有 change_room 和 hide_hotspot
 
@@ -597,6 +606,140 @@ def build_items():
 
 物品欄（`InventoryState`）只存 `{key: 數量}`，名稱圖示都是即時查目錄。
 畫面在右上角，已經自動掛好了，數量大於 1 會顯示 `×N`，點一下會用翻頁視窗顯示描述。
+
+---
+
+## 角色數值與死亡
+
+血量、憤怒值、體力、電池量 —— 這些都是「綁在某個角色身上的整數計數器」，
+統一存在 `GameState.actors` 裡，用同一套語法。
+
+### 設定初始數值
+
+在 `actors.rpy` 定義，這是**唯一**要改數字的地方：
+
+```renpy
+define actor_start_stats = {
+    "player":      {"hp": 5},
+    "annie_ghost": {"hp": 3, "rage": 0},
+}
+
+label init_actor_stats:
+    python:
+        for _actor, _stats in actor_start_stats.items():
+            for _stat, _value in _stats.items():
+                game_state.actors.set(_actor, _stat, _value)
+    return
+```
+
+然後在 `label start` 呼叫，**要排在第一次 `change_room` 之前** ——
+進房事件本身就可能扣血：
+
+```renpy
+label start:
+    call init_actor_stats from _call_init_actor_stats
+    show screen explore
+    $ change_room("demo_room")
+    jump explore_loop
+```
+
+> **沒有設定 `hp` 的角色是無敵的。** 引擎不給任何預設血量，
+> 所以會被打死的角色一定要出現在上面那張表裡。
+> 這個失敗方向是刻意選的：忘了初始化的症狀是「打不死」，
+> 比「一開場就死」好查太多。
+
+### 改數值
+
+```renpy
+Effect(actor="player",      stats={"hp": -1})                 # 主角扣一滴血
+Effect(actor="annie_ghost", stats={"rage": +1})               # 安妮的憤怒值 +1
+Effect(actor="player",      stats={"battery": -10, "hp": -1}) # 一次改多個
+```
+
+三件要記得的事：
+
+1. **`actor` 一定要寫。** 沒寫會在遊戲啟動時直接報錯 ——
+   `Effect(stats={"hp": -1})` 看不出來扣的是誰的血，
+   而扣錯角色是那種「遊戲照跑、幾天後才發現」的錯誤。
+2. **`stats` 是增減量，不是設定值。** 同一個 Effect 套兩次會累積。
+3. **一個 Effect 只對一個角色。** 要同時改兩個角色就寫兩個 Event。
+4. **夾在 0 以上。** 扣過頭不會變負數，所以不會有「hp 跑到 -5、吃了藥加 1 還是死的」這種 bug。
+
+### 查數值（寫條件用）
+
+```renpy
+# 瀕死才會出現的熱點
+Hotspot(..., condition=Condition(check=lambda s: s.stats("player", "hp") <= 1))
+
+# 安妮夠生氣才出現
+Hotspot(..., condition=Condition(check=lambda s: s.stats("annie_ghost", "rage") >= 3))
+
+# 鬼還沒被解決
+Condition(check=lambda s: s.is_alive("annie_ghost"))
+```
+
+查不到的數值回傳 `0`，跟 `item_count()` 同一個約定。
+
+### 死亡
+
+引擎只認得一個數值名稱：**`hp`**。歸零就判定死亡，其他名稱
+（`rage` / `battery` / `stamina`）歸零就只是歸零，要有後果請自己用 `Condition` 接。
+
+死亡 label 由你宣告，引擎不寫死名字：
+
+```renpy
+define on_player_death = "game_over"
+
+label game_over:
+    scene black with fade
+    "你的意識沉了下去……"
+    "GAME OVER"
+    $ renpy.full_restart()      # 回主選單
+```
+
+> 不能寫 `$ MainMenu(confirm=False)` —— `MainMenu` 是一個**畫面動作（Action）**類別，
+> 那樣寫只是「建立一個動作物件然後丟掉」，什麼都不會發生。
+> 動作是給 screen 的 `action=` 用的（`textbutton "主選單" action MainMenu()`）。
+> 在 label 裡要直接執行，用 `renpy.full_restart()`。
+
+**只有主角（`"player"`）死亡會跳過去。** 鬼死掉引擎不做任何事，
+後果由你的 `Condition` 表達。
+
+### 死亡的時機：對話會完整演完
+
+```renpy
+Event(id="attic.annie", effect=Effect(actor="player", stats={"hp": -1}, label="annie_attack"))
+
+label annie_attack:
+    "有什麼東西從你背後掠過。"
+    show ghost with vpunch
+    "你的手臂上多了一道抓痕。"
+    return
+    # ↑ 這裡跑完，引擎才檢查 hp<=0 → jump game_over
+```
+
+死亡檢查是在**整串事件的 label 都跑完之後**才做的，
+所以「鬼撲上來」的演出不會被扣血硬生生打斷。
+
+> ⚠️ **死亡 label 是被 `jump` 進來的，不是 `call`** ——
+> 死掉不該回到探索迴圈。所以它**不會 return 回來**，要自己收尾：
+> `renpy.full_restart()`、`jump` 回檢查點、或跳到你自己的結局畫面。
+> 寫 `return` 的話會跳回一個你意想不到的地方。
+
+### 讓立繪跟著數值變
+
+這一段 Ren'Py 原生就能做，引擎不介入：
+
+```renpy
+image annie_ghost = ConditionSwitch(
+    "game_state.actors.is_dead('annie_ghost')",          "annie_gone.png",
+    "game_state.actors.get('annie_ghost', 'rage') >= 5", "annie_furious.png",
+    "True",                                              "annie_calm.png",
+)
+```
+
+之後只要 `show annie_ghost`，憤怒值一改立繪自己就換。
+條件字串會被頻繁求值，所以**只能讀不能寫** —— 跟 `Hotspot.condition` 同一條紀律。
 
 ---
 

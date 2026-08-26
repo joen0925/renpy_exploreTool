@@ -95,6 +95,10 @@ screen explore():
                                 xpos hotspot.x
                                 ypos hotspot.y
 
-    # 右上角物品欄。放在 fixed 外面，所以不會跟著鏡頭移動。
-    # (左上角留給 F9 的 debug 標點面板)
+    # 物品欄與狀態欄。放在 fixed 外面，所以不會跟著鏡頭移動。
+    #
+    # 物品欄在右上角，狀態欄在左上角。
+    # 狀態欄會跟 F9 的 debug 標點面板重疊 —— 那是刻意的，
+    # debug 面板只在開發時開，正式環境用不到。
     use inventory_display
+    use status_display

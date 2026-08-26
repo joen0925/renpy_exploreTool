@@ -6,6 +6,25 @@
 ##################################################
 
 init python:
+
+    def room_by_name(name):
+        """
+        把房間名稱換回房間物件。存檔還原時會用到 (見 Room.__reduce__)。
+
+        用 getattr 而不是直接寫 store.rooms，是因為 rooms 由遊戲內容那邊宣告，
+        引擎不能假設它一定存在。
+        """
+        room = getattr(store, "rooms", {}).get(name)
+
+        if room is None:
+            raise ValueError(
+                f"讀檔失敗：存檔裡記著玩家在 \"{name}\"，但目前的房間清單裡沒有這個房間。\n"
+                f"是不是把它從 build_rooms() 裡刪掉或改名了？"
+            )
+
+        return room
+
+
     # 繼承 NoRollback：這是場景資料，不是劇情狀態，
     # 不該被 Ren'Py 的倒帶(rollback)系統追蹤/還原，
     # 不然滑鼠滾輪不小心倒帶時，current_room 等變數可能被還原成不一致的狀態。
@@ -52,12 +71,35 @@ init python:
                 ))
 
             # 如果有傳入 hotspots 就使用傳入的列表，否則初始化為空列表
-            self.hotspots = hotspots if hotspots is not None else []
+            self.hotspots = []
+            for hotspot in (hotspots or []):
+                self.add_hotspot(hotspot)
+
+        def __reduce__(self):
+            """
+            存檔時「只存房間名稱」，讀檔時再從目前的 rooms 查回來。
+
+            為什麼需要這個：
+            current_room 是 default (會進存檔)，所以它指到的整棵
+            Room / Hotspot 物件樹都會被 pickle。但 Hotspot 可以帶
+            Condition(check=lambda ...)，而那個 lambda 定義在 build_xxx()
+            函式內部 —— Python 存不了函式內的區域物件，存檔會直接爆掉：
+                AttributeError: Can't get local object 'build_attic.<locals>.<lambda>'
+
+            順便解決另一個長期的痛：房間是靜態定義，把它整個存進存檔的話，
+            之後改了熱點座標、改了文字、加了新熱點，舊存檔統統吃不到。
+            改成只存名稱之後，讀檔拿到的永遠是「目前的」房間定義。
+            這跟物品欄只存 key、名稱圖示即時查 item_catalog 是同一個道理。
+            """
+            return (room_by_name, (self.name,))
 
         def add_event(self, event):
             self.events.append(event)
 
         def add_hotspot(self, hotspot):
+            # 記住它屬於哪個房間 —— 存檔時要靠這個把熱點還原回來
+            # (見 Hotspot.__reduce__)
+            hotspot.room_name = self.name
             self.hotspots.append(hotspot)
 
         def remove_hotspot(self, hotspot):

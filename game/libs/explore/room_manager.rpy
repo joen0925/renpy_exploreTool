@@ -59,13 +59,15 @@ init python:
             TriggerType.ENTER_ROOM,
         )
 
-        if labels:
-            # 第二階段交給 run_event_labels 依序執行那些 label
-            renpy.call("run_event_labels", labels)
-        else:
-            # 沒有事件要跑的話，至少要讓畫面重新整理一次，
-            # 新房間的背景與熱點才會馬上換上去
-            renpy.restart_interaction()
+        # 第二階段交給 run_event_labels 依序執行那些 label。
+        #
+        # 就算 labels 是空的也要走這一趟：死亡檢查在那裡面，
+        # 而進房事件可能只扣血、不講話 (Effect(...) 沒帶 label)。
+        #
+        # 畫面重新整理 (讓新房間的背景與熱點換上去) 也在那邊做 ——
+        # 不能寫在這裡，因為 renpy.call() 會直接跳走，
+        # 接在它前面的 renpy.restart_interaction() 等於沒用。
+        renpy.call("run_event_labels", labels)
 
 
 # 探索狀態的主迴圈：把控制權交給玩家，讓遊戲一直停在探索畫面上。

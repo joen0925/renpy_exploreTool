@@ -31,15 +31,18 @@ game/libs/state/            遊戲狀態，不依賴 explore，可單獨複製
 ├── inventory_state.rpy     物品欄
 ├── flag_state.rpy          旗標
 ├── event_state.rpy         事件的觸發次數與死亡名單
+├── actor_state.rpy         角色數值（血量/憤怒值…）與死亡
 └── game_state.rpy          GameState + StateView + default game_state
 
 game/libs/ui/               通用 UI，跟探索工具包無關
 └── page_popup.rpy          翻頁視窗 show_pages()
 
 game/explore_demo/          遊戲內容，可以整個刪掉換成自己的
-├── rooms.rpy               build_rooms() + default rooms
+├── rooms.rpy               build_rooms() + init 1 rooms
+├── actors.rpy              角色初始數值 + on_player_death + game_over
 ├── demo_room.rpy           示範房間與它的 label
 ├── kitchen.rpy             第二個示範房間（驗證房間切換）
+├── attic.rpy               第三個示範房間（角色數值與死亡）
 └── tests.rpy               自動化測試
 ```
 
@@ -442,14 +445,130 @@ label demo_pick_key:
 
 ---
 
+## 什麼會進存檔，什麼不會
+
+這條界線弄錯會出兩種災難，所以先講清楚。
+
+| | 進存檔嗎 | 例子 |
+|---|---|---|
+| **進度** | **會** | `game_state`（物品、旗標、事件次數、角色數值）、`current_room` |
+| **靜態定義** | **不會** | `rooms`、`item_catalog`、Room / Hotspot / Event / Condition 物件 |
+
+所以房間清單用 `init 1 python:` 而不是 `default`：
+
+```renpy
+init 1 python:
+    rooms = build_rooms()
+```
+
+### 為什麼不能用 default
+
+`default` 的變數會被寫進存檔，也就是整棵 Room / Hotspot 物件樹都要被 pickle。
+但 `Hotspot` 可以帶 `Condition(check=lambda ...)`，而那個 lambda 定義在
+`build_xxx()` **函式內部** —— Python 存不了函式內的區域物件，一按存檔就：
+
+```
+AttributeError: Can't get local object 'build_kitchen.<locals>.<lambda>'
+```
+
+就算完全不用 lambda 還有第二個問題：房間存進存檔之後，
+你改了熱點座標、改了文字、加了新熱點，**舊存檔統統吃不到**，
+因為讀檔是把當初存的那份舊物件還原回來。
+
+### 為什麼是 init 1 而不是 define
+
+兩者都不會進存檔，但 `define` 在優先權 0 執行，跟各房間檔的 `init python` 同一層，
+所以會**照檔名排序**。檔名排在 `rooms.rpy` 之後的房間會來不及定義：
+
+```
+NameError: name 'build_study' is not defined
+```
+
+`init 1` 保證在所有優先權 0 的 init 跑完之後才執行，檔名怎麼取都不會踩到。
+
+### Room 與 Hotspot 只存名稱
+
+光把 `rooms` 移出存檔還不夠，因為還有兩條路會把房間物件拖進去：
+
+- `current_room` 是 `default`，它**指向**一個 Room 物件
+- 點擊熱點走 `Call("_fire_hotspot", hotspot)`，把 Hotspot 當成 label 參數 ——
+  而呼叫堆疊與倒帶紀錄也會進存檔
+
+所以 `Room` 與 `Hotspot` 都實作了 `__reduce__`，存檔時**只記名稱**，
+讀檔時用 `room_by_name()` / `hotspot_by_name()` 從目前的 `rooms` 查回來。
+
+效果是：改了座標、改了文字、加了新熱點，**舊存檔一樣吃得到新的定義**。
+跟物品欄只存 key、名稱圖示即時查 `item_catalog` 是同一個道理。
+
+代價是熱點必須掛在房間上（`add_hotspot()` 會填 `room_name`），
+沒掛在任何房間的 Hotspot 存檔時會拋出一個講清楚原因的錯誤。
+
+由 `save_load_flow` 測試守著。
+
+---
+
+## 角色數值與死亡
+
+> 寫法與完整範例看 [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md#角色數值與死亡)。
+> 這裡只講引擎的規則。
+
+`GameState.actors` 是一張兩層的表：`{角色 -> {數值名稱 -> 整數}}`。
+血量、憤怒值、體力、電池量都是同一種東西 —— 綁在某個角色身上的整數計數器，
+所以不做 `hp` 專用欄位，新增一種數值不用改引擎。
+
+### 引擎只認得 `hp`
+
+`hp` 歸零判定為死亡。其他名稱（`rage` / `battery` / `stamina`）引擎完全不管，
+歸零就只是歸零，要有後果自己用 `Condition` 接。
+
+**沒有設定過 `hp` 的角色是無敵的。** 引擎不給任何預設血量。
+這個失敗方向是刻意選的 —— 忘了初始化的症狀是「打不死」，
+比「一開場就死」好查太多。
+
+### 數值夾在 0 以上
+
+`set()` 與 `add()` 都夾下限。這是為了避免「hp 扣到 -5、吃了藥加 1 還是死的」
+這種難查的 bug。代價是加減不可逆：扣到 0 之後再加回來，中間溢出的部分不會記得。
+
+### 死亡的派發時機
+
+死亡檢查在 `run_event_labels` 的**最後**，也就是整串事件的 label 都跑完之後。
+這樣「鬼撲上來」的對話與動畫才能完整演完，不會扣完血就被硬生生打斷。
+
+檢查是**無條件**執行的，就算收集到的 label 清單是空的也會做 ——
+因為 `Effect(actor="player", stats={"hp": -1})` 可以完全不帶 label。
+`change_room()` 因此也改成一律呼叫 `run_event_labels`，不再判斷有沒有 label。
+
+> ⚠️ **副作用**：`change_room()` 現在**一定**會呼叫 `renpy.call()`，
+> 而那會終止當下的 Python 區塊。所以
+> ```renpy
+> python:
+>     change_room("kitchen")
+>     do_something()      # ← 不會執行
+> ```
+> 以前這個行為取決於房間有沒有事件（有事件才會終止），現在則是一致的。
+> 要在換房間之後做事，寫成下一個語句或放進進房事件裡。
+
+死亡 label 由內容層宣告（`define on_player_death = "game_over"`），
+引擎用 `getattr(store, "on_player_death", None)` 去取，不寫死名字。
+沒宣告的話玩家死掉不會有任何事發生，但也不會當掉。
+
+**用 `jump` 不是 `call`** —— 死亡 label 不會 return 回來，要自己收尾。
+
+---
+
 ## 啟動探索
 
 ```renpy
 label start:
+    call init_actor_stats from _call_init_actor_stats
     show screen explore
     $ change_room("demo_room")
     jump explore_loop
 ```
+
+`init_actor_stats` 要排在第一次 `change_room` 之前 ——
+進房事件本身就可能扣血。沒有角色數值需求的話這一行可以拿掉。
 
 `explore_loop` 是探索狀態的主迴圈，不會自己結束。
 要離開探索（例如進入劇情章節），從熱點的 label 直接 `jump` 出去即可。

@@ -118,29 +118,33 @@ testcase explore_smoke:
     # 所以這裡改用替身攔截 renpy.music.play，
     # 驗證的是「有沒有被呼叫、帶了什麼參數」這個契約本身。
     # 放在最後面，因為它會把 current_room 換成臨時房間。
+    # 每個 change_room 一定要獨立成一個語句，不能跟斷言擠在同一個
+    # python 區塊裡 —— change_room 內部會呼叫 renpy.call()，
+    # 那會直接終止當下的區塊，後面的程式碼一行都不會跑。
+    # (這個坑真的踩過：整段測試變成只跑前兩行卻顯示 PASSED)
     python:
         # 記錄用的清單放在 store 上，不能用區域變數 ——
         # 測試裡的 python 區塊是用獨立的 globals/locals 執行的，
         # 下面那個 lambda 之後被 change_room 呼叫時查不到區域變數。
         store._music_calls = []
-
-        _orig_music_play = renpy.music.play
+        store._orig_music_play = renpy.music.play
         renpy.music.play = lambda *a, **kw: store._music_calls.append((a, kw))
 
         # 借用現有房間的背景，避免 background=None 讓畫面畫不出來
-        _bg = current_room.background
+        store._music_bg = current_room.background
 
-        try:
-            change_room(Room(name="_music_none", background=_bg, music=None))
-            assert store._music_calls == [], "music=None 的房間不該碰音樂"
+    $ change_room(Room(name="_music_none", background=store._music_bg, music=None))
+    $ assert store._music_calls == [], "music=None 的房間不該碰音樂"
 
-            change_room(Room(name="_music_set", background=_bg, music="bgm.ogg"))
-            assert len(store._music_calls) == 1, f"有設 music 的房間應該播放一次，實際 {len(store._music_calls)} 次"
-            assert store._music_calls[0][0][0] == "bgm.ogg", "應該播放房間指定的那首"
-            assert store._music_calls[0][1].get("if_changed") is True, "應該用 if_changed，同一首不該從頭重播"
-        finally:
-            renpy.music.play = _orig_music_play
+    $ change_room(Room(name="_music_set", background=store._music_bg, music="bgm.ogg"))
+    $ assert len(store._music_calls) == 1, f"有設 music 的房間應該播放一次，實際 {len(store._music_calls)} 次"
+    $ assert store._music_calls[0][0][0] == "bgm.ogg", "應該播放房間指定的那首"
+    $ assert store._music_calls[0][1].get("if_changed") is True, "應該用 if_changed，同一首不該從頭重播"
 
+    $ renpy.music.play = store._orig_music_play
+
+    # 確認上面每一句都真的跑到了 —— 這正是當初漏掉的那一段
+    $ assert current_room.name == "_music_set", f"應該停在 _music_set，實際 {current_room.name}"
     $ _trace("7_music規則驗證完成")
 
 
@@ -477,6 +481,76 @@ testcase state_checks:
     $ _ev.reset()
     $ assert _ev.count_of("e1") == 0 and not _ev.is_dead("e1")
 
+    # --- ActorState：角色身上的數值 ---
+
+    $ _act = ActorState()
+
+    # 沒有的數值回傳 0，跟 InventoryState.count_of() 同一個約定
+    $ assert _act.get("player", "hp") == 0, "沒設過的數值應該回傳 0"
+
+    # 但「回傳 0」跟「設定過」是兩件事
+    $ assert not _act.has_stat("player", "hp"), "沒設過就是沒設過"
+    $ _act.set("player", "hp", 0)
+    $ assert _act.has_stat("player", "hp"), "設成 0 也算設定過"
+
+    $ _act.set("player", "hp", 5)
+    $ assert _act.get("player", "hp") == 5
+
+    # add 會回傳加減後的結果
+    $ assert _act.add("player", "hp", -2) == 3, "add 應該回傳結果"
+    $ assert _act.get("player", "hp") == 3
+
+    # 夾在 0 以上：扣過頭不會變負數
+    $ _act.add("player", "hp", -99)
+    $ assert _act.get("player", "hp") == 0, f"應該夾在 0，實際 {_act.get('player', 'hp')}"
+
+    # set 也一樣夾
+    $ _act.set("player", "hp", -5)
+    $ assert _act.get("player", "hp") == 0, "set 負數也應該夾成 0"
+
+    # 一個角色可以有多種數值，彼此獨立
+    $ _act.set("player", "battery", 100)
+    $ _act.add("player", "battery", -30)
+    $ assert _act.get("player", "battery") == 70
+    $ assert _act.get("player", "hp") == 0, "改 battery 不該影響 hp"
+
+    # 不同角色的同名數值也互不影響
+    $ _act.set("annie_ghost", "hp", 3)
+    $ _act.set("annie_ghost", "rage", 0)
+    $ assert _act.get("annie_ghost", "hp") == 3
+    $ assert _act.get("player", "hp") == 0, "改別的角色不該影響玩家"
+
+    # --- ActorState.is_dead 的四種情況 ---
+
+    # 1. 沒設過 hp = 無敵。這是刻意選的失敗方向 (打不死比一開場就死好查)
+    $ assert not _act.is_dead("nobody"), "沒設過 hp 的角色不該被判定為死亡"
+    $ assert _act.is_alive("nobody")
+
+    # 2. hp > 0 = 活著
+    $ assert not _act.is_dead("annie_ghost")
+
+    # 3. hp <= 0 = 死了
+    $ assert _act.is_dead("player"), "hp 歸零應該判定為死亡"
+
+    # 4. 明確 kill = 死了，不管有沒有血量
+    $ _act.kill("nobody")
+    $ assert _act.is_dead("nobody"), "kill() 應該讓沒有血量的角色也能死"
+
+    # revive 只解除標記，不會補血
+    $ _act.revive("nobody")
+    $ assert not _act.is_dead("nobody")
+    $ _act.kill("player")
+    $ _act.revive("player")
+    $ assert _act.is_dead("player"), "revive 不會補血，hp 還是 0 就還是死的"
+
+    # debug 面板用的查詢
+    $ assert _act.stats_of("annie_ghost") == {"hp": 3, "rage": 0}
+    $ assert _act.stats_of("annie_ghost") is not _act.stats["annie_ghost"], "stats_of 要回傳複本，不能讓外面改到內部"
+    $ assert "annie_ghost" in _act.actors()
+
+    $ _act.reset()
+    $ assert _act.get("annie_ghost", "hp") == 0 and _act.actors() == [], "reset 應該清空"
+
     # --- GameState 與 StateView ---
 
     $ _gs = GameState()
@@ -494,14 +568,28 @@ testcase state_checks:
     $ assert _view.has("opened_door"), "has() 應該查得到旗標"
     $ assert not _view.has("nothing")
 
+    # 角色數值也查得到
+    $ _gs.actors.set("player", "hp", 5)
+    $ _gs.actors.set("annie_ghost", "rage", 4)
+    $ assert _view.stats("player", "hp") == 5
+    $ assert _view.stats("annie_ghost", "rage") == 4
+    $ assert _view.stats("nobody", "hp") == 0, "查不到的回傳 0"
+    $ assert _view.is_alive("player") and not _view.is_dead("player")
+
+    $ _gs.actors.set("player", "hp", 0)
+    $ assert _view.is_dead("player"), "StateView 應該反映最新狀態，不是快照"
+
     # StateView 是唯讀的：不該有任何會改狀態的方法
     $ assert not hasattr(_view, "add"), "StateView 不該暴露 add"
     $ assert not hasattr(_view, "set"), "StateView 不該暴露 set"
     $ assert not hasattr(_view, "remove"), "StateView 不該暴露 remove"
+    $ assert not hasattr(_view, "kill"), "StateView 不該暴露 kill"
 
     # reset 要能一次清掉所有 section
     $ _gs.reset()
     $ assert not _gs.view().has("key") and not _gs.view().has("opened_door"), "reset 應該清掉所有 section"
+    $ assert _gs.view().stats("player", "hp") == 0, "reset 應該連 actors 一起清掉"
+    $ assert len(_gs.sections()) == 4, "GameState 應該有四個 section"
 
 
 # 事件系統的純邏輯測試：Condition / Effect / collect_events。
@@ -568,6 +656,65 @@ testcase event_checks:
 
     # 沒有 label 的 Effect 回傳 None
     $ assert Effect(set_flags=["x"]).apply(_gs2) is None
+
+    # --- Effect 的角色數值 ---
+
+    $ _gs3 = GameState()
+    $ _gs3.actors.set("player", "hp", 5)
+    $ _gs3.actors.set("annie_ghost", "rage", 1)
+
+    # actor 一定要寫清楚
+    $ Effect(actor="player", stats={"hp": -2}).apply(_gs3)
+    $ assert _gs3.actors.get("player", "hp") == 3, f"應該扣成 3，實際 {_gs3.actors.get('player', 'hp')}"
+
+    # 改別的角色
+    $ Effect(actor="annie_ghost", stats={"rage": +2}).apply(_gs3)
+    $ assert _gs3.actors.get("annie_ghost", "rage") == 3
+    $ assert _gs3.actors.get("player", "hp") == 3, "改鬼不該動到玩家"
+
+    # 一次改多個數值
+    $ Effect(actor="player", stats={"hp": -1, "battery": +10}).apply(_gs3)
+    $ assert _gs3.actors.get("player", "hp") == 2
+    $ assert _gs3.actors.get("player", "battery") == 10
+
+    # stats 是「增減量」不是「設定值」——
+    # 同一個 Effect 套用兩次，效果會累積
+    $ _eff_dmg = Effect(actor="player", stats={"hp": -1})
+    $ _eff_dmg.apply(_gs3)
+    $ _eff_dmg.apply(_gs3)
+    $ assert _gs3.actors.get("player", "hp") == 0, f"連扣兩次應該歸零，實際 {_gs3.actors.get('player', 'hp')}"
+
+    # 扣過頭夾在 0，不會變負數
+    $ Effect(actor="player", stats={"hp": -99}).apply(_gs3)
+    $ assert _gs3.actors.get("player", "hp") == 0
+
+    # --- 有 stats 卻沒指定 actor 要直接爆掉 ---
+    #
+    # 刻意不給「沒填就是主角」的預設值：看不出來扣的是誰的血，
+    # 而扣錯角色的血是那種「遊戲照跑、幾天後才發現」的錯誤。
+    # 因為 Effect 是在 build_rooms() 裡建立的，這個錯誤會在遊戲啟動時就跳出來。
+    python:
+        _raised = False
+        try:
+            Effect(stats={"hp": -1})
+        except ValueError:
+            _raised = True
+        assert _raised, "有 stats 卻沒指定 actor 應該直接拋 ValueError"
+
+    # 沒有 stats 的話不用寫 actor
+    $ assert Effect(label="x").actor is None
+    $ assert Effect(set_flags=["y"]).actor is None
+
+    # 兩個 Effect 不該共用同一個 stats dict
+    $ _e_a = Effect(actor="player", stats={"hp": -1})
+    $ _e_b = Effect(actor="player", stats={"hp": -1})
+    $ _e_a.stats["rage"] = 5
+    $ assert "rage" not in _e_b.stats, "兩個 Effect 不該共用同一個 stats dict"
+
+    # 沒有 stats 的 Effect 完全不碰 actors
+    $ _gs4 = GameState()
+    $ Effect(set_flags=["x"]).apply(_gs4)
+    $ assert _gs4.actors.actors() == [], "沒有 stats 就不該建立任何角色紀錄"
 
     # --- collect_events：排序 ---
 
@@ -911,3 +1058,321 @@ testcase hotspot_visibility:
     $ renpy.restart_interaction()
     pause 0.5
     assert "看說明"
+
+
+# 角色數值 (ActorState) 走完整條路：
+#   進遊戲拿到初始血量 -> 惹鬼生氣 -> 熱點因為憤怒值出現 -> 被攻擊扣血
+#   -> 對話演完 -> 死亡 -> 跳到 game_over
+#
+# 這裡刻意不寫死 demo 的數字 (初始血量幾點、扣幾滴)。
+# 那些是內容層隨時會調的參數，寫進斷言的話別人改 demo 就會誤報。
+# 要驗證的是「機制對不對」，所以血量都在測試裡自己設定。
+testcase actor_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "爬上閣樓"
+
+    # init_actor_stats 有跑到：玩家拿到了初始血量，而且活著
+    $ assert game_state.actors.has_stat("player", "hp"), "label start 應該有初始化玩家血量"
+    $ assert game_state.actors.get("player", "hp") > 0
+    $ assert not game_state.actors.is_dead("player")
+    $ _trace("1_開場血量已設定")
+
+    # --- 上閣樓 ---
+    click "爬上閣樓"
+    advance until "轉動音樂盒"
+    $ assert current_room.name == "attic"
+    $ _trace("2_進閣樓")
+
+    # 安妮的熱點還沒出現 (憤怒值不夠)
+    assert not "👻 安妮"
+
+    # --- 惹她生氣，直到熱點出現 ---
+    # 需要幾次由 demo 的條件決定，這裡用迴圈跑到出現為止，
+    # 不寫死次數，這樣調整 demo 的門檻不會讓測試誤報。
+    click "轉動音樂盒"
+    advance until "轉動音樂盒"
+    $ _rage1 = game_state.actors.get("annie_ghost", "rage")
+    $ assert _rage1 > 0, "轉音樂盒應該讓安妮的憤怒值上升"
+
+    click "轉動音樂盒"
+    advance until "轉動音樂盒"
+    $ assert game_state.actors.get("annie_ghost", "rage") > _rage1, "憤怒值應該持續累積"
+    $ _trace("3_安妮生氣了")
+
+    # 改別人的數值不該動到玩家
+    $ assert game_state.actors.get("annie_ghost", "hp") > 0, "轉音樂盒不該扣到鬼的血"
+
+    # 憤怒值夠了，熱點就自己出現 —— 沒有任何人呼叫 show()
+    assert "👻 安妮"
+
+    # --- 被攻擊會扣血 ---
+    $ _hp_before = game_state.actors.get("player", "hp")
+    click "👻 安妮"
+    advance until "轉動音樂盒"
+    $ _hp_after = game_state.actors.get("player", "hp")
+    $ assert _hp_after < _hp_before, f"被攻擊應該扣血，{_hp_before} -> {_hp_after}"
+    $ _trace("4_被攻擊扣血")
+
+    # 沒死就該回到探索狀態，不該跳走
+    $ assert renpy.get_screen("explore") is not None, "還沒死就該留在探索畫面"
+    $ assert current_room.name == "attic"
+
+    # --- 血剩一滴，再被打一次就死 ---
+    #
+    # 直接設定血量而不是一直點到死：扣幾滴是 demo 的參數，
+    # 這個測試要驗的是「歸零之後會發生什麼事」。
+    $ game_state.actors.set("player", "hp", 1)
+
+    # 先清掉這個旗標，不然它在上一次攻擊時就被設起來了，
+    # 底下那個「對話有沒有演完」的斷言會永遠成立 —— 一個假綠燈。
+    $ game_state.flags.clear("annie_left")
+    $ renpy.restart_interaction()
+
+    click "👻 安妮"
+
+    # 關鍵：扣血之後對話要「完整演完」才死。
+    # 攻擊的台詞會照常出現，不會被死亡流程硬生生打斷。
+    advance until "GAME OVER"
+    $ _trace("5_死亡演出")
+
+    $ assert game_state.actors.is_dead("player"), "血歸零應該判定為死亡"
+    $ assert renpy.get_screen("explore") is None, "死了就不該還留著探索畫面"
+
+    # 關鍵斷言：排在攻擊後面的那個 label 也跑完了。
+    #
+    # 這證明死亡檢查是在「整串 label 都跑完之後」才做的。
+    # 如果改成「每跑完一個就檢查」，扣血那個 label 一結束就會跳走，
+    # 後面的收尾永遠不會執行，這個旗標就不會被設起來。
+    $ assert game_state.flags.has("annie_left"), "扣血之後的對話應該完整演完才死亡，不該被打斷"
+
+
+# 「只扣血、不講話」的事件也要能觸發死亡。
+#
+# 這條路徑很容易漏掉：Effect 沒帶 label 的話，收集到的清單是空的。
+# 死亡檢查如果寫在「有 label 才做」的分支裡，
+# 這種事件就會靜靜地把玩家扣死卻什麼都不發生。
+#
+# 分成兩段測：
+#   1. 進房時的無聲扣血 (閣樓的蠟燭詛咒)
+#   2. 點熱點時的無聲扣血 (生鏽的釘子) —— 這一段才驗得到空清單那條路徑
+#
+# 為什麼第 1 段驗不到：點「爬上閣樓」本身是熱點，它的 on_click 是一個 label，
+# 所以外層的 run_event_labels 是非空的。內層 change_room 就算跳過死亡檢查，
+# 外層那次也會補抓到，兩種實作的結果一樣。
+# 釘子沒有 label 也沒有 on_click，交給 run_event_labels 的才是真正的空清單。
+testcase silent_death:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "爬上閣樓"
+
+    click "爬上閣樓"
+    advance until "點燃蠟燭"
+    $ _trace("1_進閣樓")
+
+    # 點蠟燭啟動詛咒
+    click "點燃蠟燭"
+    advance until "下樓"
+    $ assert game_state.flags.has("attic_cursed"), "點蠟燭應該啟動詛咒"
+    $ _trace("2_詛咒啟動")
+
+    # 詛咒事件沒有 label，所以進房不該有任何對話冒出來，
+    # 但血要確實被扣掉。
+    click "下樓"
+    advance until "爬上閣樓"
+
+    $ _hp_before = game_state.actors.get("player", "hp")
+    click "爬上閣樓"
+    advance until "轉動音樂盒"
+    $ _hp_after = game_state.actors.get("player", "hp")
+
+    $ assert _hp_after < _hp_before, f"詛咒應該在進房時扣血，{_hp_before} -> {_hp_after}"
+    $ assert renpy.get_screen("explore") is not None, "沒死就該留在探索畫面"
+    $ _trace("3_無聲扣血")
+
+    # --- 點熱點的無聲扣血：釘子沒有 label 也沒有 on_click ---
+    #
+    # 這才是真正的「空清單」路徑：_fire_hotspot 收集到的是 []，
+    # 交給 run_event_labels 的也是 []。
+    $ _hp_before = game_state.actors.get("player", "hp")
+    click "🩸 生鏽的釘子"
+    pause 0.5
+
+    $ assert game_state.actors.get("player", "hp") < _hp_before, "釘子應該扣血"
+    # 沒有任何 label，所以畫面完全不該切走 —— 探索畫面要一直在
+    $ assert renpy.get_screen("explore") is not None, "沒有 label 的事件不該讓畫面閃一下"
+    $ _trace("4_釘子無聲扣血")
+
+    # --- 血剩一滴，再踩一次釘子就死 ---
+    $ game_state.actors.set("player", "hp", 1)
+    $ renpy.restart_interaction()
+
+    click "🩸 生鏽的釘子"
+    advance until "GAME OVER"
+    $ _trace("5_無聲死亡")
+
+    $ assert game_state.actors.is_dead("player"), "沒有 label 的事件也該能把人扣死"
+    $ assert renpy.get_screen("explore") is None, "死了就不該還留著探索畫面"
+
+
+# 進房事件「只扣血、不講話」也要能觸發死亡。
+#
+# 這是 change_room() 那一側的空清單路徑，跟 silent_death 測的
+# _fire_hotspot 那一側是兩條不同的程式碼。
+#
+# 為什麼要直接呼叫 change_room 而不是點熱點：
+# 點熱點換房間的話，熱點的 on_click 是一個 label，
+# 外層的 run_event_labels 是非空的，就算 change_room 自己漏掉死亡檢查，
+# 外層那次也會補抓到 —— 兩種實作看起來會一模一樣。
+# 直接呼叫才隔離得出來。
+testcase enter_room_silent_death:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    click "開始"
+    advance until "走去廚房"
+
+    python:
+        # 借用現有房間的背景，避免 background=None 讓畫面畫不出來
+        store._trap_room = Room(
+            name="_silent_trap",
+            background=current_room.background,
+            events=[
+                Event(
+                    id="_silent_trap.drain",
+                    effect=Effect(actor="player", stats={"hp": -1}),   # 沒有 label
+                    limit=None,
+                ),
+            ],
+        )
+        game_state.actors.set("player", "hp", 1)
+
+    # change_room 一定要獨立成一個語句 —— 它內部會 renpy.call()，
+    # 那會終止當下的 python 區塊。
+    $ change_room(store._trap_room)
+
+    advance until "GAME OVER"
+
+    $ assert game_state.actors.is_dead("player"), "進房的無聲扣血也該能把人扣死"
+    $ assert renpy.get_screen("explore") is None, "死了就不該還留著探索畫面"
+
+
+# 存檔 / 讀檔不能壞。
+#
+# 背景：rooms 原本是 default (會進存檔)，於是整棵 Room/Hotspot 物件樹都要被 pickle。
+# 但 Hotspot 可以帶 Condition(check=lambda ...)，那個 lambda 定義在 build_xxx()
+# 函式內部，Python 存不了函式內的區域物件，一按存檔就:
+#     AttributeError: Can't get local object 'build_bed_room.<locals>.<lambda>'
+#
+# 改成 init 1 之後房間不再進存檔。這支測試守住「不能再退回去」。
+#
+# 刻意走過所有會用到 lambda 條件的房間再存檔 ——
+# 只在開場存檔的話，那些房間可能還沒被碰過，抓不到問題。
+testcase save_load_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "爬上閣樓"
+
+    # 開場就先存一次
+    python:
+        store._save_err = None
+        try:
+            renpy.save("_test_save_1", extra_info="開場")
+        except Exception as e:
+            store._save_err = f"{type(e).__name__}: {e}"
+    $ assert store._save_err is None, f"開場存檔就失敗了：{store._save_err}"
+    $ _trace("1_開場存檔成功")
+
+    # --- 走到有 lambda 條件的房間，改一些狀態，再存一次 ---
+    click "爬上閣樓"
+    advance until "轉動音樂盒"
+
+    click "轉動音樂盒"
+    advance until "轉動音樂盒"
+
+    python:
+        store._save_err = None
+        try:
+            renpy.save("_test_save_2", extra_info="閣樓")
+        except Exception as e:
+            store._save_err = f"{type(e).__name__}: {e}"
+    $ assert store._save_err is None, f"在閣樓存檔失敗：{store._save_err}"
+    $ _trace("2_閣樓存檔成功")
+
+    # --- 存檔裡該有的東西 ---
+    $ assert renpy.can_load("_test_save_2"), "存檔應該讀得回來"
+
+    # --- 房間定義「不在」存檔裡 ---
+    #
+    # 存檔是壓縮過的，所以「檔案裡找不到某個字串」證明不了什麼。
+    # 直接驗 pickle 的行為：Room / Hotspot 應該只被存成「名稱」，
+    # 還原時從目前的 rooms 查回來 (Room.__reduce__ / Hotspot.__reduce__)。
+    python:
+        import pickle
+
+        store._room_blob = pickle.dumps(current_room)
+        store._hs_blob = pickle.dumps(current_room.get_hotspot("music_box"))
+
+    # 只存名稱的話會很小；整棵物件樹被存進去的話會大得多
+    $ assert len(store._room_blob) < 300, f"房間不該被整個存進去，實際 {len(store._room_blob)} bytes"
+    $ assert len(store._hs_blob) < 300, f"熱點不該被整個存進去，實際 {len(store._hs_blob)} bytes"
+
+    # 還原之後要拿到「目前的」那個物件本身，不是一份舊複本 ——
+    # 這就是「改了座標舊存檔也吃得到」的來源
+    $ assert pickle.loads(store._room_blob) is current_room, "還原的房間應該就是目前的那一個"
+    $ assert pickle.loads(store._hs_blob) is current_room.get_hotspot("music_box"), "還原的熱點應該就是目前的那一個"
+
+    $ _trace("3_房間只存名稱")
+
+    # --- 存檔讀得回來 ---
+    $ assert renpy.can_load("_test_save_2"), "存檔應該讀得回來"
+    $ _trace("4_存檔可讀")
+
+    # --- 對照組：進度是「照值」存的，不會被之後的改動影響 ---
+    #
+    # 房間定義只存名稱、讀檔吃到最新版；但玩家的進度剛好相反 ——
+    # 存檔當下是多少就是多少，之後再怎麼變都不影響那個存檔。
+    #
+    # 這裡直接用 pickle 驗，因為存檔用的就是同一套機制。
+    python:
+        store._rage_at_save = game_state.actors.get("annie_ghost", "rage")
+        store._gs_blob = pickle.dumps(game_state)
+
+        # 存檔之後才發生的事
+        game_state.actors.add("annie_ghost", "rage", 99)
+        game_state.inventory.add("_late_item", 7)
+        game_state.flags.set("_late_flag")
+
+        store._gs_restored = pickle.loads(store._gs_blob)
+
+    # 還原回來的是一份「當時的複本」，不是現在這個
+    $ assert store._gs_restored is not game_state, "進度應該是照值存的，不是照參考"
+
+    $ assert store._gs_restored.actors.get("annie_ghost", "rage") == store._rage_at_save, "讀檔應該拿回存檔當下的數值，不是後來的"
+    $ assert game_state.actors.get("annie_ghost", "rage") == store._rage_at_save + 99, "現在這個當然還是新的值"
+
+    $ assert not store._gs_restored.inventory.has("_late_item"), "存檔之後才拿到的物品不該出現在舊存檔裡"
+    $ assert not store._gs_restored.flags.has("_late_flag"), "存檔之後才設的旗標不該出現在舊存檔裡"
+
+    $ _trace("5_進度照值存")
+
+    # 把上面為了測試加的東西清掉，不要污染後面
+    python:
+        game_state.actors.add("annie_ghost", "rage", -99)
+        game_state.inventory.remove("_late_item", 7)
+        game_state.flags.clear("_late_flag")
+
+    # 清掉這支測試產生的存檔，不要留在 saves/ 裡礙事
+    python:
+        for _slot in ("_test_save_1", "_test_save_2"):
+            if renpy.can_load(_slot):
+                renpy.unlink_save(_slot)

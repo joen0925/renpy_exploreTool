@@ -26,6 +26,23 @@
 #     events    有條件、有次數、會依 sequence 排序，狀態記在 GameState
 ##################################################
 init python:
+
+    def hotspot_by_name(room_name, name):
+        """
+        把「房間名稱 + 熱點名稱」換回熱點物件。存檔還原時會用到 (見 Hotspot.__reduce__)。
+        """
+        hotspot = room_by_name(room_name).get_hotspot(name)
+
+        if hotspot is None:
+            raise ValueError(
+                f"讀檔失敗：存檔裡記著熱點 \"{room_name}.{name}\"，"
+                f"但目前的房間定義裡找不到它。\n"
+                f"是不是把它刪掉或改名了？"
+            )
+
+        return hotspot
+
+
     # 繼承 NoRollback：這是場景資料，不是劇情狀態，
     # 不該被 Ren'Py 的倒帶(rollback)系統追蹤/還原，
     # 不然滑鼠滾輪不小心倒帶時，變數可能被還原成不一致的狀態。
@@ -80,6 +97,10 @@ init python:
             # 基本資訊
             self.name = name
 
+            # 這個熱點掛在哪個房間。由 Room.add_hotspot() 填。
+            # 存檔時要靠它把熱點還原回來 (見 __reduce__)。
+            self.room_name = None
+
             # 位置 (背景圖座標，不是螢幕座標；顯示時由外層容器統一做鏡頭位移)
             self.x = x
             self.y = y
@@ -120,6 +141,27 @@ init python:
             self.label_size = label_size
             self.label_color = label_color
             self.label_hover_color = label_hover_color
+
+        def __reduce__(self):
+            """
+            存檔時「只存房間名稱 + 熱點名稱」，讀檔時再查回來。
+
+            為什麼需要這個：
+            點擊熱點會走 Call("_fire_hotspot", hotspot)，也就是把整個 Hotspot
+            物件當成 label 的參數傳進去 —— 而呼叫堆疊與倒帶紀錄都會被寫進存檔。
+            Hotspot 可以帶 Condition(check=lambda ...)，那個 lambda 定義在
+            build_xxx() 函式內部，Python 存不了函式內的區域物件，存檔就會爆掉。
+
+            跟 Room.__reduce__ 是同一套做法，理由也一樣：
+            熱點是靜態定義，不該進存檔，改了座標舊存檔也要吃得到。
+            """
+            if self.room_name is None:
+                raise ValueError(
+                    f"熱點 \"{self.name}\" 沒有掛在任何房間上，沒辦法存進存檔。\n"
+                    f"熱點要用 room.add_hotspot(...) 或 Room(hotspots=[...]) 加進房間。"
+                )
+
+            return (hotspot_by_name, (self.room_name, self.name))
 
         def add_event(self, event):
             self.events.append(event)

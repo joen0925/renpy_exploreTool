@@ -10,6 +10,11 @@ define e = Character("艾琳")
 
 label start:
 
+    # 設定角色的初始數值 (血量、憤怒值)。
+    # 一定要排在第一次 change_room 之前 —— 進房事件本身就可能扣血。
+    # 沒有設定 hp 的角色在引擎眼中是無敵的。
+    call init_actor_stats from _call_init_actor_stats
+
     # 先把探索畫面顯示出來，之後 say_in_room 會負責在講話時暫時收起它、
     # 講完再自動放回來。
     show screen explore

@@ -3,7 +3,7 @@
 #
 #   事件的結果。這是整個事件系統裡唯一「會改狀態」的部分。
 #
-#   Effect 只做 state mutation，六個欄位全部都是改 GameState。
+#   Effect 只做 state mutation，所有欄位全部都是改 GameState。
 #   劇情 (講話、換房間、播動畫) 一律走 label ——
 #   Ren'Py 已經有一整套流程控制，沒必要再實作一套。
 #
@@ -31,6 +31,23 @@ init python:
             clear_flags=None,   # 清旗標
             kill_events=None,   # 讓指定 event_id 死亡，可以殺別的房間的事件
 
+            # 角色數值的「增減量」，不是設定值：
+            #     Effect(actor="player", stats={"hp": -1})           玩家扣一滴血
+            #     Effect(actor="annie_ghost", stats={"rage": +1})    安妮的憤怒值 +1
+            #     Effect(actor="player", stats={"battery": -10, "hp": -1})  一次改多個
+            #
+            # 一個 Effect 只對一個角色。要同時改兩個角色就寫兩個 Event ——
+            # 這比讓 key 變成 ("annie_ghost", "rage") 這種 tuple 好讀太多。
+            stats=None,
+
+            # stats 要改到誰身上。有 stats 就一定要填，沒填會直接報錯。
+            #
+            # 刻意不給「沒填就是主角」的預設值：
+            # Effect(stats={"hp": -1}) 這種寫法看不出來扣的是誰的血，
+            # 而扣錯角色的血是那種「遊戲照跑、幾天後才發現」的錯誤。
+            # 寧可多打幾個字。
+            actor=None,
+
             # 狀態改完之後要跑的 label。可省略。
             label=None,
         ):
@@ -39,7 +56,20 @@ init python:
             self.set_flags = self._as_list(set_flags)
             self.clear_flags = self._as_list(clear_flags)
             self.kill_events = self._as_list(kill_events)
+            self.stats = dict(stats) if stats else {}
+            self.actor = actor
             self.label = label
+
+            # 有 stats 卻沒指定 actor 就直接爆掉。
+            #
+            # Effect 是在 build_rooms() 裡建立的，所以這個錯誤會在遊戲啟動時
+            # 就跳出來，不會等到玩家真的點到那個熱點才發現。
+            if self.stats and self.actor is None:
+                raise ValueError(
+                    f"Effect 有 stats={self.stats} 卻沒有指定 actor。\n"
+                    f"要改誰的數值一定要寫清楚，例如 "
+                    f"Effect(actor=\"player\", stats={self.stats})。"
+                )
 
         @staticmethod
         def _as_list(value):
@@ -63,9 +93,10 @@ init python:
             """
             套用所有狀態改動，回傳要跑的 label (沒有就是 None)。
 
-            執行順序是固定的：給物品 → 拿物品 → 設旗標 → 清旗標 → 殺事件。
+            執行順序是固定的：
+            給物品 → 拿物品 → 設旗標 → 清旗標 → 殺事件 → 改角色數值。
             這個順序由引擎決定，寫 Effect 的人不用去想它 ——
-            因為六種改動彼此不相依，順序不會影響結果。
+            因為各種改動彼此不相依，順序不會影響結果。
             """
             for entry in self.give_items:
                 key, count = self._split(entry)
@@ -83,6 +114,11 @@ init python:
 
             for event_id in self.kill_events:
                 game_state.events.kill(event_id)
+
+            # stats 是增減量，所以用 add() 不是 set()。
+            # add() 會夾在 0 以上，扣過頭不會變負數。
+            for stat, delta in self.stats.items():
+                game_state.actors.add(self.actor, stat, delta)
 
             return self.label
 

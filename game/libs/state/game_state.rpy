@@ -3,12 +3,13 @@
 #
 #   遊戲狀態的總容器，以及給 Condition 用的唯讀視圖。
 #
-#   GameState 持有三個 section：
+#   GameState 持有四個 section：
 #     inventory  玩家有什麼東西
 #     flags      做過什麼事
 #     events     每個 Event 觸發過幾次、死了沒
+#     actors     角色身上的數值 (血量、憤怒值……) 與死亡狀態
 #
-#   三個 section 刻意「不」共用基底類別，只約定它們都有 reset()。
+#   四個 section 刻意「不」共用基底類別，只約定它們都有 reset()。
 #   原因是 Ren'Py 會忽略 game/libs/ 底下第一層目錄名來決定載入順序
 #   (見 game/libs/libs.txt)，所有檔案是混在一起按檔名字母序載入的，
 #   有繼承關係的話基底類別很可能還沒定義就被拿來繼承。
@@ -29,10 +30,11 @@ init python:
             self.inventory = InventoryState()
             self.flags = FlagState()
             self.events = EventState()
+            self.actors = ActorState()
 
         def sections(self):
             """所有 section。新增 section 時記得加進這裡，並確保它有 reset()。"""
-            return [self.inventory, self.flags, self.events]
+            return [self.inventory, self.flags, self.events, self.actors]
 
         def reset(self):
             """把整個遊戲進度清空。debug 用，正常遊戲流程不會呼叫。"""
@@ -44,7 +46,7 @@ init python:
             return StateView(self)
 
         def __repr__(self):
-            return f"<GameState {self.inventory} {self.flags} {self.events}>"
+            return f"<GameState {self.inventory} {self.flags} {self.events} {self.actors}>"
 
 
     class StateView:
@@ -86,6 +88,25 @@ init python:
 
         def is_event_dead(self, event_id):
             return self._gs.events.is_dead(event_id)
+
+        # --- 角色數值 ---
+
+        def stats(self, actor, name):
+            """
+            查一個角色的數值，沒有的話回傳 0。
+
+                Condition(check=lambda s: s.stats("player", "hp") <= 1)
+                Condition(check=lambda s: s.stats("annie_ghost", "rage") >= 5)
+
+            名稱跟 Effect(stats={...}) 對齊，讀寫兩邊用同一個字。
+            """
+            return self._gs.actors.get(actor, name)
+
+        def is_dead(self, actor):
+            return self._gs.actors.is_dead(actor)
+
+        def is_alive(self, actor):
+            return self._gs.actors.is_alive(actor)
 
         # --- 統一查詢 ---
 

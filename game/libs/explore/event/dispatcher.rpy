@@ -92,6 +92,22 @@ init python:
         return duplicates
 
 
+    def player_death_label():
+        """
+        玩家死了的話，回傳要跳過去的 label 名稱；還活著或內容層沒宣告就回傳 None。
+
+        死亡 label 由遊戲內容宣告，引擎不寫死名字：
+            define on_player_death = "game_over"
+
+        沒宣告的話這裡回傳 None，玩家死掉就只是「hp 是 0」這個狀態，
+        遊戲會繼續跑 —— 不會當掉，但也不會有 Game Over。
+        """
+        if not store.game_state.actors.is_dead(PLAYER_ACTOR):
+            return None
+
+        return getattr(store, "on_player_death", None)
+
+
 # 第二階段：依序執行第一階段收集到的 label。
 #
 # 用法 (從 python 呼叫)：
@@ -102,24 +118,48 @@ init python:
 # 全部跑完再恢復成可以互動的探索畫面。
 label run_event_labels(labels):
 
-    # 沒有 label 要跑就什麼都不做，不要白白閃一次畫面
-    if not labels:
-        return
+    # 沒有 label 要跑就不要白白閃一次畫面。
+    # 注意「什麼都不做」不等於「直接 return」—— 底下的死亡檢查一定要跑到，
+    # 因為 Effect 可能只扣血、不講話。
+    if labels:
 
-    hide screen explore
-    show screen room_background
+        hide screen explore
+        show screen room_background
 
-    # labels 是 label 的參數，Ren'Py 會幫它做 scope。
-    # 所以就算某個 label 裡面又觸發了新的事件 (例如換房間)，
-    # 內外層的清單也不會互相蓋掉。
-    while labels:
-        $ _next_event_label = labels.pop(0)
-        call expression _next_event_label from _call_event_label
+        # labels 是 label 的參數，Ren'Py 會幫它做 scope。
+        # 所以就算某個 label 裡面又觸發了新的事件 (例如換房間)，
+        # 內外層的清單也不會互相蓋掉。
+        while labels:
+            $ _next_event_label = labels.pop(0)
+            call expression _next_event_label from _call_event_label
 
-    # 收起對話框。不做的話最後一句話會一直掛在畫面下方。
-    window hide
+        # 收起對話框。不做的話最後一句話會一直掛在畫面下方。
+        window hide
 
-    hide screen room_background
-    show screen explore
+        hide screen room_background
+        show screen explore
+
+    else:
+        # 沒有 label 要跑：不切畫面 (不要白白閃一次)，
+        # 但還是要讓畫面重新整理一次 ——
+        # 換房間如果沒有任何進房對話，新房間的背景與熱點要馬上換上去。
+        $ renpy.restart_interaction()
+
+    # 死亡檢查。
+    #
+    # 刻意等「整串 label 都跑完」才檢查，而不是每跑完一個就檢查：
+    # 這樣「鬼撲上來」的對話與動畫才有機會完整演完，
+    # 不會扣完血就被硬生生打斷。
+    #
+    # 用 jump 不是 call —— 死掉不該回到探索迴圈。
+    # 所以死亡 label 不會 return 回來，它要自己收尾
+    # ($ MainMenu()、jump 回檢查點、或 renpy.full_restart())。
+    $ _death_label = player_death_label()
+
+    if _death_label:
+        # 跳走之前先把探索畫面收起來。
+        # 上面已經 show 回去了，不收的話死亡演出期間熱點還點得到。
+        hide screen explore
+        jump expression _death_label
 
     return

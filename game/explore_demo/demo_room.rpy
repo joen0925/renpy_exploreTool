@@ -99,6 +99,15 @@ init python:
             on_click="demo_go_bed_room",
         ))
 
+        # 角色數值 (血量/憤怒值) 的示範房間
+        room.add_hotspot(Hotspot(
+            name="to_attic",
+            x=700,
+            y=760,
+            label="🪜 爬上閣樓",
+            on_click="demo_go_attic",
+        ))
+
         room.add_hotspot(Hotspot(
             name="for_test_pop",
             x=2000,
@@ -166,6 +175,11 @@ label demo_pick_key:
 label demo_go_bed_room:
     "你往休息室移動。"
     $ change_room("bed_room")
+    return
+
+label demo_go_attic:
+    "你踩上搖晃的梯子。"
+    $ change_room("attic")
     return
 
 ##################################################
