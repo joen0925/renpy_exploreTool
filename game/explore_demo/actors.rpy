@@ -18,6 +18,19 @@ define actor_start_stats = {
     "annie_ghost": {"hp": 3, "rage": 0},
 }
 
+# 狀態欄 (左上角) 要顯示哪些數值，由上往下依這個順序排。
+#
+# 只有列在這裡的才會顯示 —— 所以 annie_ghost 的 rage 不會漏給玩家看到。
+# 而且列在這裡但「沒被設定過」的數值也會自動跳過，
+# 例如玩家還沒拿到手電筒時就不會出現一列「🔦 0」。
+#
+# stat  要顯示哪個數值 (對應 actor_start_stats 裡的名稱)
+# icon  前面的圖示，用 emoji 就好，不需要美術素材
+# name  圖示後面的文字說明，可省略 (只有 icon 就夠清楚的話)
+define player_status_display = [
+    {"stat": "hp", "icon": "❤️"},
+]
+
 # 玩家死亡時要跳過去的 label。
 #
 # 引擎用 getattr(store, "on_player_death", None) 去找這個名字，

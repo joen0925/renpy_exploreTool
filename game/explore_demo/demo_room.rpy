@@ -99,6 +99,16 @@ init python:
             on_click="demo_go_bed_room",
         ))
 
+        room.add_hotspot(Hotspot(
+            name="to_playground",
+            label="前往實驗區(測試區)",
+            x=1600,
+            y=335,
+            width=240,
+            height=200,
+            on_click="demo_go_playground_room",
+        ))
+
         # 角色數值 (血量/憤怒值) 的示範房間
         room.add_hotspot(Hotspot(
             name="to_attic",
@@ -175,6 +185,11 @@ label demo_pick_key:
 label demo_go_bed_room:
     "你往休息室移動。"
     $ change_room("bed_room")
+    return
+
+label demo_go_playground_room:
+    "你往實驗室移動。"
+    $ change_room("playground")
     return
 
 label demo_go_attic:

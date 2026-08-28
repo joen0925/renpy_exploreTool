@@ -18,6 +18,7 @@ init python:
         rooms["kitchen"] = build_kitchen()
         rooms["bed_room"] = build_bed_room()
         rooms["attic"] = build_attic()
+        rooms["playground"] = build_playground()
 
         return rooms
 

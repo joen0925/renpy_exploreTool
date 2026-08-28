@@ -1376,3 +1376,81 @@ testcase save_load_flow:
         for _slot in ("_test_save_1", "_test_save_2"):
             if renpy.can_load(_slot):
                 renpy.unlink_save(_slot)
+
+
+# 左上角狀態欄 (status_display)。
+#
+# 兩層過濾：
+#   1. 只顯示 player_status_display 列出來的數值 (內容層決定要給玩家看什麼)
+#   2. 其中「沒被設定過」的跳過 (沒拿到手電筒就不該出現「🔦 0」)
+#
+# 這裡不寫死 demo 顯示了哪些數值 —— 那是內容層隨時會調的。
+# 驗的是機制：列出來的會顯示、數值變了畫面要跟著變、沒列出來的不會漏出去。
+#
+# 注意測試框架的 assert 是「純文字比對」，不會做 [變數] 插值，
+# 所以要先把數值設成一個好認的數字，再比對那個字面值。
+testcase status_display_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "爬上閣樓"
+    $ _trace("1_進入探索")
+
+    # demo 至少要顯示一個數值，不然底下全部沒有意義
+    python:
+        store._shown = [e["stat"] for e in player_status_display
+                        if game_state.actors.has_stat("player", e["stat"])]
+    $ assert store._shown, "demo 的狀態欄至少要顯示一個數值"
+
+    # --- 列在清單裡而且設定過的數值，畫面上要看得到 ---
+    $ game_state.actors.set("player", "hp", 41)
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert "41"
+    $ _trace("2_血量顯示中")
+
+    # --- 數值變了，畫面要跟著變 ---
+    #
+    # 這是狀態欄最容易做壞的地方：把數值當成快照存起來，
+    # 之後扣血了畫面還顯示舊的。
+    $ game_state.actors.set("player", "hp", 42)
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert "42"
+    assert not "41"
+    $ _trace("3_數值變了畫面跟著變")
+
+    # --- 沒列在清單裡的數值不該漏出去 ---
+    #
+    # rage 這種鬼的內部計數器如果顯示給玩家看就是 bug。
+    # 這裡用一個一定不在清單裡的名字，配一個很好認的數值。
+    $ game_state.actors.set("player", "_secret_counter", 777)
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert not "777"
+    $ _trace("4_沒列出來的不顯示")
+
+    # --- 列在清單裡、但沒設定過的數值也不該出現 ---
+    #
+    # 臨時把一個沒設定過的數值加進顯示清單，確認它不會冒出來。
+    # 測完立刻還原，不要污染別的測試。
+    python:
+        store._orig_display = list(player_status_display)
+        player_status_display.append({"stat": "_never_set", "icon": "🔦"})
+
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert not "🔦"
+    $ _trace("5_沒設定過的不顯示")
+
+    # 設定之後就該出現了
+    $ game_state.actors.set("player", "_never_set", 88)
+    $ renpy.restart_interaction()
+    pause 0.5
+    assert "88"
+    $ _trace("6_設定之後就出現")
+
+    python:
+        store.player_status_display = store._orig_display

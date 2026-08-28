@@ -35,7 +35,9 @@ game/libs/state/            遊戲狀態，不依賴 explore，可單獨複製
 └── game_state.rpy          GameState + StateView + default game_state
 
 game/libs/ui/               通用 UI，跟探索工具包無關
-└── page_popup.rpy          翻頁視窗 show_pages()
+├── page_popup.rpy          翻頁視窗 show_pages()
+├── inventory_display.rpy   物品欄（右上角）
+└── status_display.rpy      狀態欄（左上角）
 
 game/explore_demo/          遊戲內容，可以整個刪掉換成自己的
 ├── rooms.rpy               build_rooms() + init 1 rooms
