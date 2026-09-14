@@ -122,6 +122,22 @@ init python:
             ]
         ))
 
+        # 保險箱：解謎關卡 (KeypadPuzzle) 的示範。
+        #
+        # 熱點本身什麼都不做，只負責把關卡叫出來 ——
+        # 不給 Hotspot 加 puzzle 欄位，一律走 label，
+        # 跟換房間、講話同一條規則。
+        #
+        # 開過就不用再開了，所以用 condition 讓它自己消失。
+        room.add_hotspot(Hotspot(
+            name="safe",
+            x=1400,
+            y=300,
+            label="🔒 保險箱",
+            condition=Condition(forbid=["safe_opened"]),
+            on_click="kitchen_open_safe",
+        ))
+
         return room
 
 
@@ -164,4 +180,18 @@ label kitchen_locker_empty:
 
 label close_locker:
     "櫃子關起來了。"
+    return
+
+label kitchen_open_safe:
+    call run_puzzle("kitchen_safe") from _call_kitchen_open_safe
+    return
+
+label kitchen_safe_opens:
+    "四聲喀答之後，鎖舌彈開了。"
+    "裡面躺著一個牛皮紙袋。"
+    return
+
+label kitchen_safe_shock:
+    "鍵盤發出一聲短促的蜂鳴。"
+    "指尖竄過一陣刺痛 —— 這東西會咬人。"
     return

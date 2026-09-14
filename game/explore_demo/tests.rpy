@@ -1454,3 +1454,470 @@ testcase status_display_flow:
 
     python:
         store.player_status_display = store._orig_display
+
+
+# 解謎關卡 (Puzzle) 的純邏輯：哪一種結果配哪一個 Effect。
+#
+# puzzle_result_effect 是純函式，餵假的結果就能測，不用把畫面叫出來。
+testcase puzzle_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- 結果與 Effect 的對應 ---
+
+    $ _ok = Effect(set_flags=["opened"])
+    $ _bad = Effect(actor="player", stats={"hp": -1})
+    $ _p = KeypadPuzzle(code="1234", on_success=_ok, on_failure=_bad)
+
+    $ assert puzzle_result_effect(_p, PUZZLE_SOLVED) is _ok, "答對要套 on_success"
+    $ assert puzzle_result_effect(_p, PUZZLE_FAILED) is _bad, "答錯要套 on_failure"
+
+    # 關掉視窗什麼都不做 —— 這才是「可以關掉但沒有放棄選項」的實作
+    $ assert puzzle_result_effect(_p, PUZZLE_CLOSED) is None, "關掉視窗不該算失敗"
+
+    # 預期外的值一律什麼都不做。
+    #
+    # 這一條很重要：Ren'Py 的 Return() 不帶參數時回傳的是 True 不是 None，
+    # 所以新的關卡類型只要寫錯一個 Return()，run_puzzle 就會收到 True。
+    # 那時候「什麼都不做」比「當成答對」安全太多 —— 一按 ✕ 就開鎖過。
+    $ assert puzzle_result_effect(_p, True) is None, "收到 True 不該當成答對"
+    $ assert puzzle_result_effect(_p, None) is None
+    $ assert puzzle_result_effect(_p, False) is None
+    $ assert puzzle_result_effect(_p, "亂七八糟") is None
+
+    # 三個常數不能互相撞，也不能是會被誤判的值
+    $ assert len({PUZZLE_SOLVED, PUZZLE_FAILED, PUZZLE_CLOSED}) == 3, "三個結果常數不能重複"
+    $ assert all(isinstance(_v, str) and _v for _v in (PUZZLE_SOLVED, PUZZLE_FAILED, PUZZLE_CLOSED)), "結果常數必須是非空字串"
+
+    # 沒設 on_failure 的關卡，答錯就沒代價
+    $ _p2 = KeypadPuzzle(code="1234", on_success=_ok)
+    $ assert puzzle_result_effect(_p2, PUZZLE_FAILED) is None, "沒設 on_failure 就不該有代價"
+    $ assert puzzle_result_effect(_p2, PUZZLE_SOLVED) is _ok
+
+    # --- KeypadPuzzle 的欄位 ---
+
+    # run_puzzle 只認這四個屬性 (鴨子型別)，缺一個就跑不了
+    $ assert _p.screen == "keypad_puzzle"
+    $ assert _p.on_success is _ok and _p.on_failure is _bad
+    $ assert _p.pausable is True, "pausable 預設應該是 True"
+
+    # 密碼一律轉成字串，這樣寫 code=4721 或 code="4721" 都行
+    $ assert KeypadPuzzle(code=4721, on_success=_ok).code == "4721", "數字密碼應該轉成字串"
+    $ assert KeypadPuzzle(code="0042", on_success=_ok).code == "0042", "開頭的 0 不能被吃掉"
+
+    # --- 目錄查表 ---
+
+    $ assert puzzle_def("kitchen_safe") is not None, "demo 的關卡應該查得到"
+    $ assert puzzle_def("nope") is None, "查不到的關卡應該回傳 None"
+
+
+# 走完密碼鎖的三條路徑：關掉視窗 / 答錯 / 答對。
+#
+# 密碼不寫死在測試裡 —— 從 puzzle_catalog 讀出來，
+# 這樣改了 demo 的密碼，測試也不用跟著改。
+#
+# 輸入的方式是直接設定 screen 變數而不是一位一位 click，
+# 因為測試的 click 是「語句」，沒辦法放進迴圈裡跑可變長度的密碼。
+# 數字鍵本身有沒有接對，由前面單獨 click 一次來驗。
+testcase keypad_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "走去廚房"
+
+    click "走去廚房"
+    advance until "保險箱"
+    $ assert current_room.name == "kitchen"
+    $ _trace("1_進廚房")
+
+    # --- 路徑一：打開又關掉，什麼都不該發生 ---
+    click "保險箱"
+    pause 0.5
+    $ assert renpy.get_screen("keypad_puzzle") is not None, "點保險箱應該叫出密碼鎖"
+    $ _trace("2_密碼鎖開啟")
+
+    # 數字鍵有沒有真的接上 SetScreenVariable
+    $ assert renpy.get_screen_variable("entered", screen="keypad_puzzle") == ""
+    click "7"
+    pause 0.3
+    $ assert renpy.get_screen_variable("entered", screen="keypad_puzzle") == "7", "按數字鍵應該記到 entered"
+    $ _trace("3_數字鍵有作用")
+
+    $ _hp_before = game_state.actors.get("player", "hp")
+    click "✕"
+    pause 0.5
+
+    $ assert renpy.get_screen("keypad_puzzle") is None, "✕ 應該關掉視窗"
+    $ assert not game_state.flags.has("safe_opened"), "關掉視窗不該算答對"
+    $ assert game_state.actors.get("player", "hp") == _hp_before, "關掉視窗不該算答錯，不能扣血"
+    $ assert renpy.get_screen("explore") is not None, "關掉之後要回到探索畫面"
+    $ _trace("4_關掉視窗什麼都沒發生")
+
+    # --- 路徑二：答錯 ---
+    click "保險箱"
+    pause 0.5
+
+    # 重新打開時輸入格要是空的 (screen 的 default entered 每次都重來)
+    $ assert renpy.get_screen_variable("entered", screen="keypad_puzzle") == "", "重新打開不該殘留上次按的數字"
+
+    # 一組一定不對的密碼：把正確密碼的每一位都 +1
+    python:
+        _code = puzzle_def("kitchen_safe").code
+        store._wrong = "".join(str((int(_c) + 1) % 10) for _c in _code)
+        renpy.set_screen_variable("entered", store._wrong, screen="keypad_puzzle")
+
+    $ renpy.restart_interaction()
+    pause 0.3
+    $ _hp_before = game_state.actors.get("player", "hp")
+    $ _trace("5_輸入錯誤密碼")
+
+    click "確認"
+    advance until "保險箱"
+
+    $ assert not game_state.flags.has("safe_opened"), "密碼錯了不該開"
+    $ assert game_state.actors.get("player", "hp") < _hp_before, "demo 的 on_failure 會扣血"
+    $ assert renpy.get_screen("keypad_puzzle") is None, "答錯之後視窗要關掉"
+    $ _trace("6_答錯有代價")
+
+    # --- 路徑三：答對 ---
+    click "保險箱"
+    pause 0.5
+
+    python:
+        renpy.set_screen_variable("entered", puzzle_def("kitchen_safe").code,
+                                  screen="keypad_puzzle")
+
+    $ renpy.restart_interaction()
+    pause 0.3
+
+    # 解完還在廚房，所以等的是廚房的熱點 (保險箱本身會消失，不能等它)
+    click "確認"
+    advance until "打開冰箱"
+
+    $ assert game_state.flags.has("safe_opened"), "密碼對了應該開"
+    $ assert game_state.inventory.has("documents"), "開了應該拿到獎勵物品"
+    $ _trace("7_答對拿到東西")
+
+    # 開過的保險箱熱點會自己消失 (condition=forbid=["safe_opened"])
+    assert not "🔒 保險箱"
+    $ assert renpy.get_screen("explore") is not None, "解完要回到探索畫面"
+
+
+init python:
+
+    class _RollbackStash(NoRollback):
+        """
+        倒帶測試專用的置物櫃。
+
+        倒帶會把 store 裡的東西還原到當時的狀態 —— 包括測試自己在
+        $ 語句裡設的變數。所以「倒帶前量到的值」要放在 NoRollback 物件上，
+        不然一倒帶就跟著消失，斷言會拿不到。
+        """
+        pass
+
+    _rb = _RollbackStash()
+
+
+# 倒帶 (quick menu 的「返回」) 經過 modal 視窗時不能卡住。
+#
+# 原本的 bug：翻頁視窗與解謎關卡都是 call screen，是倒帶的停靠點。
+# 看完物品簡介、關掉之後按「返回」會回到視窗裡；而視窗是 modal，
+# 會擋住 quick menu 的「返回」鈕 —— 按不到，只能關掉，
+# 關掉再按返回又回到視窗裡，永遠出不去。
+#
+# 修法是在視窗期間 renpy.suspend_rollback(True)，讓倒帶直接跳過。
+#
+# 「卡住」的判定方式：連按兩次「返回」。
+# 如果倒帶停在 modal 視窗裡，第二次的 click "返回" 會找不到可以點的按鈕而逾時。
+testcase rollback_through_modals:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 20.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "生鏽的鑰匙"
+    click "🔑 生鏽的鑰匙"
+    advance until "走去廚房"
+
+    # --- 物品簡介 (page_popup) ---
+
+    click "生鏽的鑰匙"
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is not None, "點物品應該打開簡介"
+
+    click "關閉"
+    pause 0.5
+    $ _trace("1_關閉物品簡介")
+
+    click "返回"
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is None, "倒帶不該回到物品簡介視窗裡"
+    $ _trace("2_返回一次沒進視窗")
+
+    # 第二次還按得到 = 沒有被 modal 視窗擋住
+    click "返回"
+    pause 0.5
+    $ assert renpy.get_screen("page_popup") is None, "繼續倒帶也不該回到視窗裡"
+    $ _trace("3_返回兩次沒卡住")
+
+    # 把測試游標從「返回」鈕上移開。
+    #
+    # click 會把測試游標留在按鈕上，那顆按鈕就一直保持焦點 ——
+    # 之後推進對話時，Enter 會觸發「有焦點的按鈕」，等於又按了一次返回，
+    # 一直往回倒、永遠推不回來。真人玩家按完返回會把滑鼠移去點對話，不會發生這件事。
+    # (這個坑踩過：測試連續三次卡在 advance until，還一度誤判成倒帶的 bug)
+    move pos (960, 300)
+
+    # 倒帶正確性：倒帶到某個時間點、再往前推回來，狀態要跟那個時間點一致。
+    # 記在 NoRollback 的置物櫃裡，不然「倒帶當下量到的值」自己也會被倒帶掉。
+    $ _rb.key_at_rollback_point = game_state.inventory.has("key")
+
+    # --- 解謎關卡 (keypad) ---
+    #
+    # 從這裡開始是新的一段流程，先回到探索狀態、走去廚房。
+    advance until "走去廚房"
+    $ _trace("3a_回到探索看得到走去廚房")
+    $ assert game_state.inventory.has("key") == _rb.key_at_rollback_point, f"倒帶後再往前推，鑰匙狀態應該跟倒帶當下一致 (當下 {_rb.key_at_rollback_point})"
+    click "走去廚房"
+    $ _trace("3b_點了走去廚房")
+    advance until "保險箱"
+    $ _trace("3c_看得到保險箱")
+
+    python:
+        # 暫時把答錯的代價換成「不帶 label」的版本。
+        #
+        # 這樣答錯之後沒有對話，只要倒帶一次就該回到打開關卡之前 ——
+        # 測試不用去數 demo 的對話有幾句，改 demo 台詞也不會讓這裡誤報。
+        # (這個改動發生在倒帶停靠點之後，倒帶時會自動還原)
+        puzzle_def("kitchen_safe").on_failure = Effect(actor="player", stats={"hp": -1})
+
+        _rb.hp_before = game_state.actors.get("player", "hp")
+
+    click "保險箱"
+    pause 0.5
+    $ assert renpy.get_screen("keypad_puzzle") is not None
+
+    python:
+        _code = puzzle_def("kitchen_safe").code
+        _wrong = "".join(str((int(_c) + 1) % 10) for _c in _code)
+        renpy.set_screen_variable("entered", _wrong, screen="keypad_puzzle")
+
+    $ renpy.restart_interaction()
+    pause 0.3
+    click "確認"
+    advance until "保險箱"
+
+    $ _rb.hp_after_wrong = game_state.actors.get("player", "hp")
+    $ assert _rb.hp_after_wrong < _rb.hp_before, "答錯應該扣血"
+    $ _trace("4_答錯扣血")
+
+    click "返回"
+    pause 0.5
+    $ assert renpy.get_screen("keypad_puzzle") is None, "倒帶不該回到密碼鎖裡"
+
+    # 我在 puzzle.rpy 的註解裡宣稱「答錯扣的血會一起被倒帶還原」——
+    # 這句話要有東西守著，不能只寫在註解裡。
+    $ assert game_state.actors.get("player", "hp") == _rb.hp_before, f"倒帶應該把答錯扣的血還回來，倒帶前 {_rb.hp_before}、答錯後 {_rb.hp_after_wrong}、現在 {game_state.actors.get('player', 'hp')}"
+    $ _trace("5_倒帶跳過密碼鎖而且血回來了")
+
+    click "返回"
+    pause 0.5
+    $ assert renpy.get_screen("keypad_puzzle") is None, "繼續倒帶也不該回到密碼鎖裡"
+    $ _trace("6_返回兩次沒卡住")
+    move pos (960, 300)
+
+
+# 九宮格解鎖 (PatternPuzzle) 的純邏輯。
+#
+# 規則與拖曳判定都抽成純函式，PatternPad 的 event() 也可以直接餵假的
+# pygame 事件 —— 所以轉角、手滑、跨過中間點這些情況都不用靠真的拖滑鼠。
+testcase pattern_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- pattern_extend：接點規則 ---
+
+    $ assert pattern_extend([], 1) == [1]
+    $ assert pattern_extend([1], 2) == [1, 2], "相鄰的點直接接上"
+    $ assert pattern_extend([1], 5) == [1, 5], "斜對角相鄰，中間沒有格點"
+    $ assert pattern_extend([1], 6) == [1, 6], "馬步 (1->6) 中間沒有格點"
+
+    # 直線跨過的點會被自動接上
+    $ assert pattern_extend([1], 3) == [1, 2, 3], "橫跨：1->3 要自動接上 2"
+    $ assert pattern_extend([1], 7) == [1, 4, 7], "直跨：1->7 要自動接上 4"
+    $ assert pattern_extend([1], 9) == [1, 5, 9], "斜跨：1->9 要自動接上 5"
+    $ assert pattern_extend([4], 6) == [4, 5, 6]
+    $ assert pattern_extend([3], 7) == [3, 5, 7]
+
+    # 中間的點已經用過了，就直接跨過去
+    $ assert pattern_extend([2, 1], 3) == [2, 1, 3], "中間點用過了就不再接一次"
+
+    # 同一個點不能用兩次
+    $ assert pattern_extend([1, 2], 2) == [1, 2], "重複的點要被忽略"
+    $ assert pattern_extend([1, 2], 1) == [1, 2]
+
+    # 純函式：不能改到傳進來的 list
+    $ _orig = [1]
+    $ pattern_extend(_orig, 3)
+    $ assert _orig == [1], "pattern_extend 不該改到傳進來的 list"
+
+    # --- 座標與判定 ---
+
+    # 480 的連線區切三等分，每格 160，點在格子中央
+    $ assert pattern_dot_center(1) == (80.0, 80.0)
+    $ assert pattern_dot_center(5) == (240.0, 240.0)
+    $ assert pattern_dot_center(9) == (400.0, 400.0)
+
+    $ assert pattern_dot_at(240, 240) == 5, "點在圓心要命中"
+    $ assert pattern_dot_at(80 + 40, 80) == 1, "判定範圍內要命中"
+    $ assert pattern_dot_at(80 + 50, 80) is None, "判定範圍外要落空"
+    $ assert pattern_dot_at(160, 160) is None, "兩點之間的空隙不該命中任何點"
+    $ assert pattern_dot_at(-100, -100) is None
+
+    # --- PatternPuzzle：建立時就檢查畫不畫得出來 ---
+
+    $ _ok = Effect(set_flags=["x"])
+
+    $ _pp = PatternPuzzle(pattern="1235789", on_success=_ok)
+    $ assert _pp.pattern == [1, 2, 3, 5, 7, 8, 9], "字串圖形要轉成數字 list"
+    $ assert _pp.screen == "pattern_puzzle"
+    $ assert _pp.pausable is True
+    $ assert _pp.on_failure is None
+    $ assert PatternPuzzle(pattern=[1, 5, 9, 6], on_success=_ok).pattern == [1, 5, 9, 6]
+
+    python:
+        def _raises(**kw):
+            try:
+                PatternPuzzle(on_success=_ok, **kw)
+            except ValueError:
+                return True
+            return False
+
+    $ assert _raises(pattern=[1, 3, 6, 9]), "1->3 會自動接上 2，這個圖形畫不出來，要報錯"
+    $ assert _raises(pattern=[1, 2, 2, 3]), "重複的點要報錯"
+    $ assert _raises(pattern=[0, 1, 2, 3]), "編號超出 1-9 要報錯"
+    $ assert _raises(pattern=[1, 2, 3]), "比 min_length (預設 4) 短，玩家畫出來會被當手滑，要報錯"
+    $ assert not _raises(pattern=[1, 2, 3], min_length=3), "min_length 放寬之後就合法"
+
+    $ assert puzzle_def("playground_phone") is not None, "demo 的圖形鎖應該查得到"
+
+    # --- PatternPad：直接餵假的滑鼠事件 ---
+
+    python:
+        def _down(pad, dot):
+            x, y = pattern_dot_center(dot)
+            return pad.event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1), x, y, 0)
+
+        def _move(pad, dot):
+            x, y = pattern_dot_center(dot)
+            return pad.event(pygame.event.Event(pygame.MOUSEMOTION), x, y, 0)
+
+        def _up(pad):
+            return pad.event(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1), 0, 0, 0)
+
+    # 畫對：從 1 直接跳到 9，中間的 5 要被自動接上
+    python:
+        _pad = PatternPad([1, 5, 9], 3)
+        _down(_pad, 1)
+        _move(_pad, 9)
+        assert _pad.path == [1, 5, 9], f"跳過中間點也要被接上，實際 {_pad.path}"
+        assert _up(_pad) == PUZZLE_SOLVED, "畫對要回傳 PUZZLE_SOLVED"
+        assert _pad.path == [] and not _pad.dragging, "放開之後要清掉路徑"
+
+    # 畫錯
+    python:
+        _pad = PatternPad([1, 5, 9], 3)
+        _down(_pad, 1)
+        _move(_pad, 3)
+        assert _up(_pad) == PUZZLE_FAILED, "畫錯要回傳 PUZZLE_FAILED"
+
+    # 手滑：點太少，不結束互動 (回傳 None)，也不算失敗
+    python:
+        _pad = PatternPad([1, 5, 9], 3)
+        _down(_pad, 1)
+        _move(_pad, 2)
+        assert _up(_pad) is None, "點太少不該結束互動"
+        assert _pad.too_short, "點太少要顯示提示"
+
+        # 再畫一次，提示要消失
+        _down(_pad, 1)
+        assert not _pad.too_short, "重新開始畫要清掉提示"
+
+    # 不是從點上開始拖，就不算開始
+    python:
+        _pad = PatternPad([1, 5, 9], 3)
+        _pad.event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1), 160, 160, 0)
+        assert not _pad.dragging, "沒按在點上不該開始連線"
+        assert _up(_pad) is None, "沒在拖的時候放開不該有結果"
+
+
+# 九宮格解鎖的整合測試：真的用滑鼠拖曳。
+#
+# 測試框架的 drag 只能拖「一段直線」，最多連到 3 個點，
+# 所以這裡暫時把 demo 的圖形換成 [1, 5, 9]、min_length 放寬成 3。
+# (demo 的 Z 形圖形在 pattern_checks 裡用假事件驗)
+testcase pattern_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "前往實驗區"
+
+    click "前往實驗區"
+    advance until "舊手機"
+    $ assert current_room.name == "playground"
+    $ _trace("1_進實驗區")
+
+    python:
+        _phone = puzzle_def("playground_phone")
+        _phone.pattern = [1, 5, 9]
+        _phone.min_length = 3
+
+    # --- 路徑一：打開又關掉 ---
+    click "舊手機"
+    pause 0.5
+    $ assert renpy.get_screen("pattern_puzzle") is not None, "點舊手機應該叫出圖形鎖"
+
+    click "✕"
+    pause 0.5
+    $ assert renpy.get_screen("pattern_puzzle") is None, "✕ 應該關掉視窗"
+    $ assert not game_state.flags.has("playground_phone_unlocked"), "關掉不該算解開"
+    $ _trace("2_關掉什麼都沒發生")
+
+    # --- 路徑二：手滑 (只連 2 個點) ---
+    click "舊手機"
+    pause 0.5
+
+    drag pos pattern_dot_screen_pos(1) to pos pattern_dot_screen_pos(2) steps 10
+    pause 0.3
+
+    $ assert renpy.get_screen("pattern_puzzle") is not None, "點太少不該關掉視窗"
+    $ assert renpy.get_screen_variable("pad", screen="pattern_puzzle").too_short, "點太少要顯示提示"
+    $ _trace("3_手滑不算一次嘗試")
+
+    # --- 路徑三：畫錯 (1->3 會變成 1,2,3) ---
+    drag pos pattern_dot_screen_pos(1) to pos pattern_dot_screen_pos(3) steps 10
+
+    # 用 advance until 回到探索畫面，不要假設「畫錯之後沒有對話」——
+    # on_failure 帶不帶 label 是 demo 內容隨時會調的。
+    # 沒有對話時會立刻通過；有對話時會先把對話推完。
+    # (這個坑踩過：demo 加了失敗對話之後，這裡直接去點舊手機就點不到了)
+    advance until "舊手機"
+
+    $ assert renpy.get_screen("pattern_puzzle") is None, "畫錯之後視窗要關掉"
+    $ assert not game_state.flags.has("playground_phone_unlocked"), "畫錯不該解開"
+    $ _trace("4_畫錯")
+
+    # --- 路徑四：畫對 (1->9 斜拖，中間的 5 會被連到) ---
+    click "舊手機"
+    pause 0.5
+
+    drag pos pattern_dot_screen_pos(1) to pos pattern_dot_screen_pos(9) steps 20
+    advance until "舊手機"
+
+    $ assert game_state.flags.has("playground_phone_unlocked"), "畫對應該解開"
+    $ assert renpy.get_screen("explore") is not None, "解完要回到探索畫面"
+    $ _trace("5_畫對解開")

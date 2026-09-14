@@ -160,6 +160,18 @@ label show_pages(pages):
     # 每次打開都從第一頁開始
     $ page_popup_index = 0
 
+    # 倒帶 (quick menu 的「返回」、滾輪、PageUp) 要跳過這個視窗。
+    #
+    # call screen 本來是倒帶的停靠點，所以玩家看完簡介、關掉之後按返回，
+    # 會「倒帶回到視窗裡」。而視窗是 modal，會擋住 quick menu 的返回鈕 ——
+    # 玩家在裡面按不到返回，只能關掉，關掉再按返回又回到視窗裡，永遠出不去。
+    #
+    # suspend_rollback 讓這段期間的停靠點變成 soft，倒帶會直接跳過。
+    # 這個旗標是記在每一筆倒帶紀錄上的，倒帶時會一起還原，不會殘留。
+    $ renpy.suspend_rollback(True)
+
     call screen page_popup(pages=pages)
+
+    $ renpy.suspend_rollback(False)
 
     return

@@ -15,6 +15,7 @@
 - [Effect 結果](#effect-結果)
 - [Item 物品](#item-物品)
 - [角色數值與死亡](#角色數值與死亡)
+- [解謎關卡](#解謎關卡)
 - [常見情境食譜](#常見情境食譜)
 - [常見錯誤](#常見錯誤)
 
@@ -769,6 +770,166 @@ image annie_ghost = ConditionSwitch(
 
 之後只要 `show annie_ghost`，憤怒值一改立繪自己就換。
 條件字串會被頻繁求值，所以**只能讀不能寫** —— 跟 `Hotspot.condition` 同一條紀律。
+
+---
+
+## 解謎關卡
+
+### 先確認你真的需要它
+
+**「打開抽屜 → 裡面有小物可以拿」不需要 Puzzle。** 那用一個近景房間就好：
+
+```renpy
+Room(name="drawer", background="images/drawer_open.png", bg_width=1920)
+```
+
+`bg_width` 等於螢幕寬 → 鏡頭不會捲動 → 看起來就是定格特寫。
+熱點、hover 發光、拿了就消失、再往下開一層，全部是現成的，**零行新程式碼**。
+
+**只有「有臨時內部狀態」的關卡才需要 Puzzle** —— 密碼鎖按到一半的數字、
+拼圖現在的排列、連線連到一半。那個狀態不是遊戲進度，不該進存檔。
+
+### 寫一個密碼鎖
+
+在 `puzzles.rpy` 定義：
+
+```renpy
+init python:
+    def build_puzzles():
+        puzzles = {}
+
+        puzzles["kitchen_safe"] = KeypadPuzzle(
+            code="4721",
+            title="保險箱",
+            hint="門把旁邊有一個四位數的鍵盤。",
+
+            on_success=Effect(set_flags=["safe_opened"],
+                              give_items=["documents"],
+                              label="kitchen_safe_opens"),
+
+            # 答錯的代價。不填就是答錯沒事，可以一直重試
+            on_failure=Effect(actor="player", stats={"hp": -1},
+                              label="kitchen_safe_shock"),
+        )
+
+        return puzzles
+
+define puzzle_catalog = build_puzzles()
+```
+
+熱點照舊走 label，**不給 `Hotspot` 加 `puzzle` 欄位**：
+
+```renpy
+Hotspot(name="safe", x=1400, y=300, label="🔒 保險箱",
+        condition=Condition(forbid=["safe_opened"]),   # 開過就消失
+        on_click="kitchen_open_safe")
+
+label kitchen_open_safe:
+    call run_puzzle("kitchen_safe") from _call_kitchen_open_safe
+    return
+```
+
+**傳名稱不傳物件** —— label 參數會進呼叫堆疊，呼叫堆疊會進存檔。
+關卡是靜態定義，跟房間與物品目錄一樣不該進存檔。
+
+### 三種結果
+
+| 玩家做了什麼 | 引擎做什麼 |
+|---|---|
+| 密碼正確 | 套用 `on_success` |
+| 密碼錯誤 | 套用 `on_failure`（沒填就什麼都不做） |
+| 按 ✕ 或 ESC 關掉 | **什麼都不做**，不算失敗 |
+
+結果走的是既有的 `Effect` 與 `run_event_labels`，所以
+**`on_failure` 扣血扣到 0 會自動接上 `on_player_death`**，不用另外寫。
+
+答錯就關掉視窗，要重試再點一次熱點。刻意不做「視窗留著一直試」——
+因為 Effect 要跑 label，label 沒辦法在視窗開著時跑，
+那樣「答錯扣一滴血」這種即時代價就做不出來。
+
+### 寫一個九宮格解鎖
+
+跟手機的圖形鎖一樣，按住一個點拖曳連線，放開送出：
+
+```renpy
+puzzles["old_phone"] = PatternPuzzle(
+    pattern="1235789",       # 也可以寫 [1, 2, 3, 5, 7, 8, 9]
+    title="舊手機",
+    hint="螢幕上的指紋油漬，看起來像一個 Z。",
+    on_success=Effect(set_flags=["phone_unlocked"], label="phone_unlocked"),
+    on_failure=None,         # 畫錯沒代價，可以一直重試
+)
+```
+
+點的編號由左到右、由上到下：
+
+```
+1   2   3
+4   5   6
+7   8   9
+```
+
+規則照 Android：
+
+| 規則 | 說明 |
+|---|---|
+| 從點上開始 | 按在空白處拖不算數 |
+| 點不能重複 | 已經連過的點會被略過 |
+| **直線跨過的點會自動連上** | 從 1 拖到 3，中間的 2 一定會被連到 |
+| 太短不算 | 少於 `min_length`（預設 4）個點就放開 = 手滑，視窗不關、不算失敗 |
+
+> ⚠️ **第三條的後果：有些圖形畫不出來。**
+>
+> `pattern=[1, 3, 6, 9]` 照著畫實際會變成 `[1, 2, 3, 6, 9]`，玩家永遠解不開。
+> `PatternPuzzle` 建立時會把圖形重播一次檢查，**畫不出來就在遊戲啟動時直接報錯**：
+>
+> ```
+> 圖形鎖 [1, 3, 6, 9] 畫不出來 —— 照著畫實際會變成 [1, 2, 3, 6, 9]。
+> ```
+
+### 做新的關卡類型
+
+不要繼承。`run_puzzle` 只認四個屬性（鴨子型別）：
+
+| 屬性 | 說明 |
+|---|---|
+| `screen` | 要顯示哪個 screen（字串），那個 screen 會收到 `puzzle=自己` |
+| `on_success` | 答對時套用的 `Effect` |
+| `on_failure` | 答錯時套用的 `Effect`，可以是 `None` |
+| `pausable` | 解謎途中世界要不要暫停（**尚未生效**，等 TIMER） |
+
+任何有這四個屬性的物件都能跑。寫一個普通類別 + 一個 screen 就好，引擎不用改。
+
+> ⚠️ **一定會踩的地雷：screen 的回傳值不能用 `Return()`**
+>
+> Ren'Py 的 `Return()` 不帶參數時**回傳的是 `True` 不是 `None`**：
+>
+> ```python
+> def __call__(self):
+>     if self.value is None:
+>         ...
+>         return True        # ← 這裡
+>     else:
+>         return self.value
+> ```
+>
+> 因為畫面動作回傳 `None` 代表「什麼都沒發生、互動不要結束」。
+>
+> 所以關閉鈕寫 `Return()` 的話，如果契約是「True = 答對」，
+> **玩家一按 ✕ 就直接過關了**。這個 bug 真的發生過。
+>
+> 一律用具名常數：`Return(PUZZLE_SOLVED)` / `Return(PUZZLE_FAILED)` /
+> `Return(PUZZLE_CLOSED)`。收到任何其他值一律當成「什麼都不做」。
+>
+> 自訂 displayable（像九宮格的 `PatternPad`）也一樣：`event()` 回傳非 `None`
+> 就會結束互動，回傳值一律用這三個常數。
+
+> **倒帶不用自己處理。** `run_puzzle` 已經在關卡畫面期間 `renpy.suspend_rollback(True)`，
+> 新的關卡 screen 不用再做一次。
+>
+> 但如果你**自己**寫了別的 modal `call screen`（不透過 `run_puzzle` 或 `show_pages`），
+> 就要記得包起來 —— 不然玩家關掉視窗後按「返回」會倒帶回視窗裡，
+> 而 modal 視窗擋住了 quick menu 的「返回」鈕，玩家會卡在裡面出不去。
 
 ---
 

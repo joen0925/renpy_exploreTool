@@ -34,6 +34,11 @@ game/libs/state/            遊戲狀態，不依賴 explore，可單獨複製
 ├── actor_state.rpy         角色數值（血量/憤怒值…）與死亡
 └── game_state.rpy          GameState + StateView + default game_state
 
+game/libs/puzzle/           解謎關卡
+├── puzzle.rpy              run_puzzle 流程 + 結果常數 + puzzle_def()
+├── keypad.rpy              KeypadPuzzle + screen keypad_puzzle（密碼鎖）
+└── pattern.rpy             PatternPuzzle + screen pattern_puzzle（九宮格解鎖）
+
 game/libs/ui/               通用 UI，跟探索工具包無關
 ├── page_popup.rpy          翻頁視窗 show_pages()
 ├── inventory_display.rpy   物品欄（右上角）
@@ -45,6 +50,8 @@ game/explore_demo/          遊戲內容，可以整個刪掉換成自己的
 ├── demo_room.rpy           示範房間與它的 label
 ├── kitchen.rpy             第二個示範房間（驗證房間切換）
 ├── attic.rpy               第三個示範房間（角色數值與死亡）
+├── playground.rpy          實驗區，隨便改
+├── puzzles.rpy             build_puzzles() + puzzle_catalog
 └── tests.rpy               自動化測試
 ```
 
@@ -739,46 +746,41 @@ pause 2.0
 
 `click` 不受影響 —— 它走 focus 系統，會自己找到目標。
 
-### 另外兩件事
+### 另外幾件事
 
 - **文字選擇器只找得到按鈕**。`assert "某文字"` 走的是 `find_focus`，
   標題、說明文字這種純 `text` 永遠找不到，不能拿來當斷言對象。
+  自訂 displayable 裡用 `renpy.render` 畫的文字也一樣找不到 ——
+  要驗的話改用 `renpy.get_screen_variable(...)` 去讀它的狀態。
 - **斷言不要綁死 demo 的可變內容**。例如不要寫 `assert on_enter_count == 1` ——
   demo 房間的 `on_enter_limit` 隨時可能被調整，改一下測試就誤報。
   改成驗證不變量（沒超過上限），精確邏輯交給 `unit_checks` 用自建物件去測。
+- **`click` 完一顆按鈕，之後要按鍵盤或推進對話的話，先把游標移開**：
 
-結果寫在專案根目錄的 `log.txt`（搜尋 `[rpytest]`），
-每個步驟的狀態則寫在 `test_trace.txt`。
+  ```renpy
+  click "返回"
+  pause 0.5
+  move pos (960, 300)     # 不移開的話，返回鈕會一直保持焦點
+  advance until "走去廚房"
+  ```
 
-寫這種測試有三個要點：
+  `click` 會把測試游標留在按鈕上，那顆按鈕就一直有焦點。
+  Ren'Py 的 `button_select` 包含 `K_RETURN`，所以之後按 Enter 會**再按一次那顆按鈕**。
+  以「返回」來說就是一直往回倒帶、永遠推不回來 ——
+  這個曾經讓 `rollback_through_modals` 連續三次卡住，還一度被誤判成倒帶的 bug。
+- **測試做到倒帶時，量到的值要放在 `NoRollback` 物件上**。
+  倒帶會把 store 裡的東西還原，包括測試自己在 `$` 裡設的變數。
+  見 `tests.rpy` 的 `_RollbackStash`。
 
-**1. 從主選單開始，第一步要先進遊戲**
+### 判斷測試結果
 
-```renpy
-click "開始"
-```
-
-介面是繁體中文，按鈕文字是「開始」不是 "Start"。
-
-**2. 用 `advance until` 推對話，不要數 advance 次數**
-
-```renpy
-advance until "走去廚房"
-```
-
-意思是「一直推進對話，直到畫面上出現這個熱點」。
-熱點出現就代表 `say_in_room` 已經把 `explore` 畫面放回來了。
-這樣之後改對話長度，測試不用跟著改。
-
-**3. 熱點在畫面外時要先移動鏡頭**
-
-```renpy
-move pos (100, 540)
-pause 2.0
-click "回到測試房間"
-```
-
-測試框架點不到畫面外的東西。先把滑鼠移到該側、等鏡頭掃過去，熱點才會進入畫面。
+- **每次執行前先刪掉 `log.txt`**，跑完再讀 `[rpytest] Status:`。
+  在這台機器上 Ren'Py **跑完測試不一定會自己結束**（PASSED 也會），
+  所以「程序被 timeout 砍掉」不等於「測試沒跑完」。
+- 反過來，一次跑好幾支時，**被砍掉的那支不會寫新的 Status**，
+  如果沒先刪檔，讀到的會是**上一支殘留的**結果 —— 一個假的 PASSED。
+- 看 `test_trace.txt` 的最後一步，確認測試真的走到你以為的地方。
+  只看 PASSED 抓不到「後半段被靜靜跳過」。
 
 **注意**：測試失敗時 Ren'Py 會停在錯誤畫面不會自動退出，進程要自己關掉。
 

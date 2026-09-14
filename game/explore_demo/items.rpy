@@ -26,7 +26,14 @@ init python:
         items["note"] = Item(
             key="note",
             name="潮濕的紙條",
-            description="字跡被水暈開了，只勉強看得出來：\n\n「別相信廚房裡的聲音。」",
+            description="字跡被水暈開了，只勉強看得出來：\n\n「別相信廚房裡的聲音。」\n\n角落用原子筆潦草寫著：4721",
+            tag="線索",
+        )
+
+        items["documents"] = Item(
+            key="documents",
+            name="牛皮紙袋",
+            description="裝著一疊文件。\n第一頁的照片上，有人的臉被塗掉了。",
             tag="線索",
         )
 

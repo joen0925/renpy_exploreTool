@@ -35,6 +35,16 @@ init python:
             on_click="playground_leave",
         ))
 
+        # 九宮格解鎖 (PatternPuzzle) 的試玩點。
+        #
+        # 解開之後熱點不消失，想重玩就再點一次。
+        room.add_hotspot(Hotspot(
+            name="old_phone",
+            x=1000, y=500,
+            label="📱 舊手機",
+            on_click="playground_open_phone",
+        ))
+
         return room
 
 
@@ -42,6 +52,20 @@ label playground_enter:
     "實驗區。這裡的東西隨便改都沒關係。"
     return
 
+label playground_open_phone:
+    call run_puzzle("playground_phone") from _call_playground_open_phone
+    return
+
+label playground_phone_unlocked:
+    "螢幕亮了起來。"
+    "桌布是一張全家福，只有一個人的臉被刮花了。"
+    return
+
 label playground_leave:
     $ change_room("demo_room")
+    return
+
+label playground_phone_wrong:
+    "螢幕震了一下。"
+    "「圖形錯誤，請再試一次。」"
     return
