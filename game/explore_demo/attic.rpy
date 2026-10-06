@@ -108,6 +108,21 @@ init python:
             limit=None,
         ))
 
+        # --- 第 3 次走進閣樓，她就站在門後 ---
+        #
+        # 「不靠計時器也能突然嚇人」的第一種做法：數次數，不數秒數。
+        #
+        # 計數器要自己掛一個 —— on_enter 講完開場白就死亡了，數不下去。
+        # 計數器的 sequence 比條件事件小，所以「第 3 次」就是真的第 3 次。
+        room.add_event(visit_counter("attic.visits"))
+
+        room.add_event(Event(
+            id="attic.third_visit_scare",
+            condition=Condition(check=count_at_least("attic.visits", 3)),
+            effect=Effect(set_flags=["attic_scared"], label="attic_third_visit"),
+            limit=1,
+        ))
+
         # --- 點下去完全不講話、只扣血的熱點 ---
         #
         # 這個熱點的事件沒有 label，也沒有 on_click，
@@ -125,6 +140,39 @@ init python:
                 Event(
                     id="attic.rusty_nail",
                     effect=Effect(actor="player", stats={"hp": -1}),
+                    limit=None,
+                ),
+            ],
+        ))
+
+        # --- 機率型的嚇人：拉開衣櫃，四次有一次她在裡面 ---
+        #
+        # 「不靠計時器也能突然嚇人」的第二種做法：骰機率。
+        #
+        # 兩個事件配成一組：
+        #   sequence 小的帶 chance + stop=True —— 骰中就演出，並擋掉後面那個
+        #   sequence 大的是保底 —— 骰不中時講一句「什麼都沒有」
+        #
+        # 保底一定要寫。少了它，骰不中的時候點下去完全沒反應，
+        # 玩家會以為這個熱點壞了。
+        room.add_hotspot(Hotspot(
+            name="wardrobe",
+            x=1600,
+            y=620,
+            label="🚪 破舊的衣櫃",
+            events=[
+                Event(
+                    id="attic.wardrobe_scare",
+                    sequence=10,
+                    chance=0.25,
+                    effect=Effect(set_flags=["attic_scared"], label="attic_wardrobe_scare"),
+                    limit=None,
+                    stop=True,
+                ),
+                Event(
+                    id="attic.wardrobe_empty",
+                    sequence=20,
+                    effect=Effect(label="attic_wardrobe_empty"),
                     limit=None,
                 ),
             ],
@@ -210,4 +258,20 @@ label attic_light_candle:
 
 label attic_player_health:
     "RRRRRRRR，補血!!"
+    return
+
+label attic_third_visit:
+    "你第三次推開閣樓的門。"
+    "這一次，門後面站著一個人。"
+    "等你眨完眼，那裡什麼都沒有。"
+    return
+
+label attic_wardrobe_scare:
+    "你拉開櫃門 ——"
+    "一張臉貼在你面前，鼻尖幾乎碰到你的。"
+    "再看一眼，櫃子裡是空的。"
+    return
+
+label attic_wardrobe_empty:
+    "櫃子裡只有幾件發霉的衣服。"
     return

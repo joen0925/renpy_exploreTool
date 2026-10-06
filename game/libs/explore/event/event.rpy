@@ -32,6 +32,15 @@ init python:
             limit=1,          # 最多觸發幾次，用完自動死亡。None = 無限次
             stop=False,       # 這個 Event 觸發之後，就不再檢查後面的
 
+            # 觸發機率，0.0 ~ 1.0。None = 100%，條件通過就一定觸發。
+            #
+            # 骰輸了「不算觸發過」—— 次數不會 +1，limit 也不會被消耗，
+            # 跟條件不符是同一個待遇。不然 limit=1 的機率事件
+            # 第一次骰輸就死亡，玩家永遠遇不到它。
+            #
+            # 骰點刻意不寫在 can_fire() 裡，在 collect_events()。理由見 can_fire。
+            chance=None,
+
             # 觸發時機。None 代表「由掛載的位置決定」——
             # 掛在 Room.events 就是 ENTER_ROOM，掛在 Hotspot.events 就是 CLICK_HOTSPOT。
             # 之後 EXIT_ROOM 接上時，同一個 list 裡混兩種時機也能正確派發。
@@ -44,6 +53,33 @@ init python:
             self.limit = limit
             self.stop = stop
             self.trigger = trigger
+            self.chance = self._validate_chance(chance)
+
+        @staticmethod
+        def _validate_chance(chance):
+            """
+            機率必須是 0.0 ~ 1.0 的數字，或 None (= 一定觸發)。
+
+            寧可在建立房間時就爆掉，也不要讓一個永遠不觸發 (或永遠觸發)
+            的事件安靜地混在遊戲裡 —— 機率事件本來就偶爾才發生，
+            靠試玩幾乎抓不到。
+            """
+            if chance is None:
+                return None
+
+            # bool 是 int 的子類別，chance=True 幾乎一定是手滑
+            if isinstance(chance, bool) or not isinstance(chance, (int, float)):
+                raise ValueError(
+                    f"Event 的 chance 要填 0.0 ~ 1.0 的數字，收到 {chance!r}。"
+                )
+
+            if not (0.0 <= chance <= 1.0):
+                raise ValueError(
+                    f"Event 的 chance 要在 0.0 ~ 1.0 之間，收到 {chance!r}。\n"
+                    f"這是機率不是百分比 —— 25% 要寫 0.25，不是 25。"
+                )
+
+            return chance
 
         def trigger_type(self, default_trigger):
             """實際的觸發時機。沒指定就用掛載位置的預設值。"""
@@ -55,6 +91,12 @@ init python:
 
             這裡「只讀不寫」，可以安全地重複呼叫。
             實際的狀態改動在 Effect.apply()。
+
+            chance 的骰點刻意「不」放在這裡：骰一次就會消耗掉一個亂數
+            (而且 Ren'Py 會強制產生一個倒帶檢查點)，那就不是只讀了，
+            重複呼叫的結果也會不一樣。
+            骰點在 collect_events()，而且只在這個函式回傳 True 之後才骰 ——
+            條件都不符的事件不該白骰。
             """
             if self.trigger_type(default_trigger) != trigger:
                 return False
@@ -71,6 +113,88 @@ init python:
 
         def __repr__(self):
             return f"<Event {self.id} seq={self.sequence}>"
+
+
+    # --- 次數累積：「第 N 次進來／點第 N 下才發生」 ---
+    #
+    # 不靠計時器製造意外感的做法之一：數玩家的動作次數，而不是數秒數。
+    # 次數本來就記在 GameState.events 裡，所以存檔、倒帶天生就對 ——
+    # 不需要任何額外機制。
+    #
+    #     room.add_event(visit_counter("attic.visits"))
+    #     room.add_event(Event(
+    #         id="attic.ghost_scare",
+    #         condition=Condition(check=count_at_least("attic.visits", 3)),
+    #         effect=Effect(label="attic_ghost_scare"),
+    #     ))
+    #
+    # 為什麼要一個專門的計數器，不能直接數 on_enter：
+    # on_enter 的 limit 就是 on_enter_limit (預設 1)，開場白講完一次就死亡，
+    # 而死掉的 Event 連 record_trigger 都不會再跑 —— 次數永遠停在 1。
+
+    # 計數器的 sequence。
+    #
+    # 這個數字是 helper 的重點，不是隨便填的：
+    # collect_events 是「跑完一個 Event 才換下一個」(套用 Effect、記錄次數、
+    # 然後才輪到下一個)，所以計數器只要排在條件事件前面，
+    # 第 3 次進來時條件讀到的就真的是 3，不會少一次。
+    #
+    # 比預設的 0 小 (排在一般事件前面)，但比 on_enter 的 -1000 大 (開場白還是先講)。
+    VISIT_COUNTER_SEQUENCE = -900
+
+
+    def visit_counter(event_id, sequence=None):
+        """
+        做一個「只負責計數」的 Event：沒有 Effect，永遠不死。
+
+        掛在 Room.events 就是數進房次數，掛在 Hotspot.events 就是數點擊次數
+        (跟一般的 Event 一樣，時機由掛載位置決定)。
+
+        配 count_at_least() 使用。
+        """
+        return Event(
+            id=event_id,
+            effect=None,
+            limit=None,
+            sequence=VISIT_COUNTER_SEQUENCE if sequence is None else sequence,
+        )
+
+
+    def count_at_least(event_id, n):
+        """
+        回傳一個給 Condition(check=...) 用的判斷式：那個 Event 觸發過至少 n 次。
+
+            Condition(check=count_at_least("attic.visits", 3))
+
+        純讀取，所以掛在 Hotspot 的顯示條件上 (每幀求值) 也安全。
+        """
+        return lambda view: view.event_count(event_id) >= n
+
+
+    def chance_passes(chance):
+        """
+        骰一次機率。None 或 >= 1.0 不骰直接算通過，<= 0.0 直接算沒中。
+
+        用 renpy.random 而不是 Python 內建的 random ——
+        renpy.random 產生的數字會被記進倒帶紀錄，倒帶時 pushback()
+        會照原順序重新發一次，所以「倒帶回去重玩」骰出來的結果是一樣的。
+        內建的 random 沒有這個保證，倒帶前後會不一致。
+
+        兩件要注意的事：
+
+        1. 每骰一次 Ren'Py 都會強制產生一個倒帶檢查點，
+            所以不要在每幀都會跑的地方骰 —— 熱點的顯示條件就是每幀求值，
+            機率因此只能掛在 Event 上，不能寫進 Hotspot.condition。
+
+        2. 邊界值 (None / 0 / 1) 不骰，免得白白消耗亂數與檢查點。
+        """
+        if chance is None or chance >= 1.0:
+            return True
+
+        if chance <= 0.0:
+            return False
+
+        return renpy.random.random() < chance
 
 
     class EventContext:

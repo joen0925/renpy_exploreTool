@@ -9,7 +9,7 @@
 #   後面的 Python 程式碼不會執行，所以沒辦法在一個函式裡連續跑好幾個 label。
 #
 #   第一階段 collect_events()  純 Python，不跳轉。
-#                              排序 → 跳過死的 → 檢查條件 → 改狀態 →
+#                              排序 → 跳過死的 → 檢查條件 → 骰機率 → 改狀態 →
 #                              把 label 收集成清單 → 記錄次數 → 遇到 stop 中斷
 #
 #   第二階段 run_event_labels  label 驅動。收起探索畫面 → 依序 call 那些 label
@@ -45,6 +45,19 @@ init python:
         for event in sorted(events, key=lambda e: e.sequence):
 
             if not event.can_fire(context, default_trigger, trigger):
+                continue
+
+            # 機率事件：骰輸了就當作這次沒發生。
+            #
+            # 排在 can_fire 之後才骰，有兩個理由：
+            #   1. 條件都不符的事件不該白骰 —— 每骰一次 Ren'Py 都會
+            #      強制產生一個倒帶檢查點。
+            #   2. can_fire 要維持「只讀、可重複呼叫」的契約。
+            #
+            # 骰輸「不算觸發過」：底下的 record_trigger 不會跑到，
+            # 所以次數不加、limit 不消耗。不然 limit=1 的機率事件
+            # 第一次骰輸就死亡，玩家永遠遇不到它。
+            if not chance_passes(event.chance):
                 continue
 
             # 條件通過，這裡開始才會改狀態

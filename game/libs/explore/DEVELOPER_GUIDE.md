@@ -364,9 +364,92 @@ Event(
     sequence=10,                # 同一個掛載點內的順序，小的先跑
     limit=1,                    # 最多觸發幾次，用完自動死亡。None = 無限
     stop=False,                 # 觸發後不再檢查後面的
+    chance=None,                # 觸發機率 0.0~1.0。None = 一定觸發，見下面
     trigger=None,               # 觸發時機。一般不用填，見下面
 )
 ```
+
+### 第 N 次才發生（次數累積）
+
+不靠計時器製造意外感的做法：**數玩家的動作次數，不數秒數**。
+次數本來就記在 `GameState.events` 裡，所以存檔、倒帶天生就對，不需要任何額外機制。
+
+```renpy
+# 計數器：只負責數，永遠不死
+room.add_event(visit_counter("attic.visits"))
+
+# 第 3 次進來才觸發
+room.add_event(Event(
+    id="attic.third_visit_scare",
+    condition=Condition(check=count_at_least("attic.visits", 3)),
+    effect=Effect(set_flags=["attic_scared"], label="attic_third_visit"),
+    limit=1,
+))
+```
+
+掛在 `Room.events` 是數進房次數，掛在 `Hotspot.events` 是數點擊次數 ——
+跟一般 Event 一樣，時機由掛載位置決定。
+
+**為什麼要一個專門的計數器，不能直接數 `on_enter`**：
+`on_enter` 的 `limit` 就是 `on_enter_limit`（預設 1），開場白講完一次就死亡，
+而死掉的 Event 連觸發次數都不會再記 —— 次數永遠停在 1。
+
+**`visit_counter` 幫你擋掉的坑**：它的 `sequence` 是 -900，比一般事件的 0 小，
+所以計數器一定先跑。派發是「跑完一個才換下一個」（套用 Effect、記錄次數，
+才輪到下一個），計數器先把這次記進去、條件才求值 —— 所以「第 3 次」
+就是真的第 3 次。順序反過來的話會變成第 4 次才觸發，而這種差一次的錯誤
+在遊戲裡幾乎看不出來，只會覺得怪。
+
+`count_at_least()` 是純讀取的，所以掛在 `Hotspot` 的顯示條件上（每幀求值）也安全：
+
+```renpy
+# 來過三次以上才看得到的東西
+Hotspot(name="scratch", x=800, y=400, label="🩸 牆上的抓痕",
+        condition=Condition(check=count_at_least("attic.visits", 3)))
+```
+
+### 機率觸發（偶爾才發生）
+
+不靠計時器製造意外感的第二種做法：**骰機率**。
+玩家不知道哪一次會中獎，所以「突然」的感覺跟計時器很接近，
+但骨子裡完全是離散事件，不需要世界時鐘。
+
+機率事件**要兩個一組**：
+
+```renpy
+Hotspot(name="wardrobe", x=1600, y=620, label="🚪 破舊的衣櫃",
+        events=[
+            # 骰中：演出 + stop 擋掉後面那個
+            Event(id="attic.wardrobe_scare",
+                  sequence=10, chance=0.25, limit=None, stop=True,
+                  effect=Effect(label="attic_wardrobe_scare")),
+
+            # 保底：骰不中時講一句「什麼都沒有」
+            Event(id="attic.wardrobe_empty",
+                  sequence=20, limit=None,
+                  effect=Effect(label="attic_wardrobe_empty")),
+        ])
+```
+
+**保底那個一定要寫。** 少了它，骰不中的時候點下去完全沒反應，
+玩家會以為這個熱點壞了。
+
+**骰輸「不算觸發過」**：次數不會 +1，`limit` 也不會被消耗，跟條件不符同一個待遇。
+所以 `chance=0.25, limit=1` 的意思是「總共只會發生一次，但要骰中才算」——
+而不是「骰一次就用完了」。這個設計沒有的話，`limit=1` 的機率事件
+第一次骰輸就死亡，玩家永遠遇不到它。
+
+**機率不是百分比**：25% 要寫 `0.25`。填 `25` 會在建立房間時直接報錯，
+不會安靜地變成「永遠觸發」。
+
+**不能寫進 `Hotspot.condition`。** 機率只能掛在 `Event` 上，這是刻意的限制：
+熱點的顯示條件每幀都會求值（探索畫面每 16ms 重繪一次），
+在那裡骰機率的話熱點會瘋狂閃爍，每秒還燒掉 60 個亂數與 60 個倒帶檢查點。
+`Event.chance` 只在派發當下骰一次。
+
+**倒帶是可重現的。** 用的是 `renpy.random`（不是 Python 內建的 `random`）——
+它產生的數字會被記進倒帶紀錄，倒帶時照原順序重新發一次，
+所以玩家倒帶回去重玩，骰出來的結果跟上次一樣，不會變成「倒帶大法刷到中獎」。
 
 ### trigger 是什麼（通常你不用填）
 
@@ -999,6 +1082,33 @@ Event(id="hall.ritual",
       condition=Condition(require=["candle", "knife", "book"]),
       effect=Effect(label="do_ritual"))
 ```
+
+### 第 N 次進來才發生的事
+
+```renpy
+room.add_event(visit_counter("attic.visits"))
+room.add_event(Event(id="attic.scare",
+                     condition=Condition(check=count_at_least("attic.visits", 3)),
+                     effect=Effect(label="attic_scare")))
+```
+
+詳見上面的「第 N 次才發生（次數累積）」。
+
+### 偶爾才發生的事（機率）
+
+```renpy
+events=[
+    Event(id="attic.wardrobe_scare", sequence=10, chance=0.25,
+          limit=None, stop=True,
+          effect=Effect(label="attic_wardrobe_scare")),
+
+    # 保底：骰不中時要有反應，不然玩家以為壞了
+    Event(id="attic.wardrobe_empty", sequence=20, limit=None,
+          effect=Effect(label="attic_wardrobe_empty")),
+]
+```
+
+詳見上面的「機率觸發（偶爾才發生）」。
 
 ### 任一把鑰匙都能開
 

@@ -27,14 +27,49 @@ init python:
 
     class GameState:
         def __init__(self):
-            self.inventory = InventoryState()
-            self.flags = FlagState()
-            self.events = EventState()
-            self.actors = ActorState()
+            # 這裡刻意不逐行寫 self.inventory = ... ——
+            # 讓「有哪些 section」只存在 _section_specs() 那一張表裡。
+            self.ensure_sections()
+
+        def _section_specs(self):
+            """
+            所有 section：(屬性名稱, 建構函式)。
+
+            **新增 section 只要改這一張表**，sections() 與 ensure_sections()
+            都從這裡讀。每個 section 要有 reset()。
+
+            為什麼是方法不是類別屬性：Ren'Py 按檔名字母序載入 game/libs/，
+            inventory_state.rpy 排在 game_state.rpy 後面，
+            寫成類別屬性的話 class 建立當下 InventoryState 還不存在。
+            """
+            return [
+                ("inventory", InventoryState),
+                ("flags", FlagState),
+                ("events", EventState),
+                ("actors", ActorState),
+            ]
+
+        def ensure_sections(self):
+            """
+            補上缺少的 section，回傳這次補了哪些。
+
+            存在的 section 一律不動 —— 讀舊存檔時進度不能被蓋掉。
+
+            為什麼需要這個：存檔是把 GameState 的 __dict__ 原樣存起來，
+            讀檔時**不會**呼叫 __init__。所以工具包多一個 section 之後，
+            舊存檔讀回來身上就是沒有那個屬性，下一次 game_state.actors
+            會直接 AttributeError。label after_load 會呼叫這裡補齊。
+            """
+            added = []
+            for name, factory in self._section_specs():
+                if getattr(self, name, None) is None:
+                    setattr(self, name, factory())
+                    added.append(name)
+            return added
 
         def sections(self):
-            """所有 section。新增 section 時記得加進這裡，並確保它有 reset()。"""
-            return [self.inventory, self.flags, self.events, self.actors]
+            """所有 section 物件。"""
+            return [getattr(self, name) for name, _ in self._section_specs()]
 
         def reset(self):
             """把整個遊戲進度清空。debug 用，正常遊戲流程不會呼叫。"""
@@ -126,3 +161,16 @@ init python:
 
 # 全域唯一的遊戲狀態。Ren'Py 會自動把它存進存檔。
 default game_state = GameState()
+
+
+# 讀檔之後 Ren'Py 會自動跑這個 label（不用自己呼叫）。
+#
+# 用途：工具包之後多一個 section（任務、鬼的計時器……）時，
+# 更早之前存的檔身上沒有那個屬性，讀回來一碰就 AttributeError。
+# 這裡替舊存檔補上預設值，已經有的進度完全不動。
+#
+# 注意這只補「整個 section 不見了」這種情況。
+# section 內部的欄位改了形狀（例如 dict 換成 list）還是要自己寫轉換。
+label after_load:
+    $ game_state.ensure_sections()
+    return

@@ -1586,8 +1586,8 @@ testcase keypad_flow:
     pause 0.5
 
     python:
-        renpy.set_screen_variable("entered", puzzle_def("kitchen_safe").code,
-                                  screen="keypad_puzzle")
+        renpy.set_screen_variable(
+            "entered", puzzle_def("kitchen_safe").code, screen="keypad_puzzle")
 
     $ renpy.restart_interaction()
     pause 0.3
@@ -1921,3 +1921,319 @@ testcase pattern_flow:
     $ assert game_state.flags.has("playground_phone_unlocked"), "畫對應該解開"
     $ assert renpy.get_screen("explore") is not None, "解完要回到探索畫面"
     $ _trace("5_畫對解開")
+
+
+# 舊存檔的相容性。
+#
+# 問題：存檔是把 GameState 的 __dict__ 原樣存起來，讀檔時不會呼叫 __init__。
+# 所以工具包多一個 section 之後，舊存檔讀回來身上就是沒有那個屬性，
+# 下一次碰到 game_state.actors 就 AttributeError —— 玩家的舊進度全毀。
+#
+# 這裡用 pickle 直接做出一個「舊版存檔」的形狀來驗，
+# 因為存檔用的就是同一套機制，而且真的去讀一個舊版存檔需要留一份二進位檔在 repo 裡。
+testcase save_compat:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # Ren'Py 讀檔後會自動跑這個 label。沒有它的話下面補的洞永遠不會被補。
+    $ assert renpy.has_label("after_load"), "少了 label after_load，舊存檔不會被補齊"
+
+    # --- 模擬舊版存檔：某個 section 還不存在的年代 ---
+    python:
+        import pickle
+
+        store._old = GameState()
+        store._old.inventory.add("rusty_key")
+        store._old.flags.set("did_something")
+
+        # 「那個年代還沒有 actors」
+        del store._old.actors
+        store._old_blob = pickle.dumps(store._old)
+
+        store._loaded = pickle.loads(store._old_blob)
+
+    # 前提要成立：還原回來的確實是缺了一塊的狀態
+    $ assert not hasattr(store._loaded, "actors"), "這個測試的前提是存檔裡沒有 actors"
+
+    # --- 補洞 ---
+    $ _added = store._loaded.ensure_sections()
+    $ assert "actors" in _added, f"缺少的 section 應該被補上，實際補了 {_added}"
+    $ assert store._loaded.actors.get("player", "hp") == 0, "補上的 section 應該是乾淨的預設值"
+
+    # 關鍵：舊進度一個都不能掉。
+    # 寫成「缺就整個重建 GameState」的話這兩條會死，而那正是最容易的寫法。
+    $ assert store._loaded.inventory.has("rusty_key"), "補 section 不該弄丟物品"
+    $ assert store._loaded.flags.has("did_something"), "補 section 不該弄丟旗標"
+
+    # 補過的東西不該再被動到 (讀檔會跑 after_load，每次讀都會呼叫一次)
+    python:
+        store._loaded.actors.set("player", "hp", 3)
+        store._again = store._loaded.ensure_sections()
+
+    $ assert store._again == [], f"沒有缺東西就不該補，實際補了 {store._again}"
+    $ assert store._loaded.actors.get("player", "hp") == 3, "再呼叫一次不該把數值洗掉"
+
+    # --- 一張表，不是兩張 ---
+    #
+    # sections() 與 ensure_sections() 都從 _section_specs() 讀。
+    # 如果有人又把清單抄成兩份，新增 section 時就會只改一邊 ——
+    # 補洞補不到那個 section，舊存檔照樣爆。
+    $ assert len(game_state.sections()) == len(game_state._section_specs())
+    $ assert game_state.ensure_sections() == [], "正在玩的狀態不該缺任何 section"
+
+
+# 次數累積觸發：「第 N 次進來才發生」。
+#
+# 這是「不靠計時器也能突然嚇人」的第一種做法。
+# collect_events 是純函式，所以餵一個乾淨的 GameState 連續派發幾次就能測完，
+# 完全不用啟動畫面。
+#
+# 最重要的一條是「第 3 次就是第 3 次」—— 差一次的話玩家會在第 4 次才被嚇到，
+# 而這種錯誤在遊戲裡幾乎看不出來，只會覺得「怪怪的」。
+testcase count_trigger_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    python:
+        store._gs = GameState()
+        store._ctx = EventContext(store._gs)
+
+        store._events = [
+            visit_counter("t.visits"),
+            Event(
+                id="t.scare",
+                condition=Condition(check=count_at_least("t.visits", 3)),
+                effect=Effect(label="t_scare"),
+                limit=1,
+            ),
+        ]
+
+        # 連續進房 5 次，記下每一次收集到的 label
+        store._fired = []
+        for _i in range(5):
+            store._fired.append(collect_events(
+                store._events,
+                TriggerType.ENTER_ROOM,
+                store._ctx,
+                TriggerType.ENTER_ROOM,
+            ))
+
+    # --- 前兩次什麼都不該發生 ---
+    $ assert store._fired[0] == [], f"第 1 次就觸發了：{store._fired[0]}"
+    $ assert store._fired[1] == [], f"第 2 次就觸發了：{store._fired[1]}"
+
+    # --- 關鍵：第 3 次剛好觸發，不是第 4 次 ---
+    #
+    # 這一條在守 visit_counter 的 sequence。
+    # 計數器如果排在條件事件後面，條件求值時這次的次數還沒被記進去，
+    # 第 3 次會讀到 2 而不觸發，變成第 4 次才嚇人。
+    $ assert store._fired[2] == ["t_scare"], f"第 3 次應該要觸發，實際 {store._fired[2]}"
+
+    # --- limit=1，之後不再觸發 ---
+    $ assert store._fired[3] == [], "已經嚇過一次就不該再嚇"
+    $ assert store._fired[4] == []
+
+    # --- 計數器本身永遠不死，會一直數下去 ---
+    #
+    # 這是 visit_counter 存在的理由：on_enter 那種會死的事件數不到第 3 次。
+    $ assert store._gs.events.count_of("t.visits") == 5, f"計數器應該數到 5，實際 {store._gs.events.count_of('t.visits')}"
+    $ assert not store._gs.events.is_dead("t.visits"), "計數器不該死亡"
+
+    # --- 對照組：會死的計數器就是數不下去 ---
+    #
+    # 直接示範 on_enter 那個坑：limit=1 的事件死掉之後次數就停住了。
+    python:
+        store._gs2 = GameState()
+        store._ctx2 = EventContext(store._gs2)
+        store._mortal = [Event(id="t.mortal", limit=1)]
+
+        for _i in range(5):
+            collect_events(
+                store._mortal,
+                TriggerType.ENTER_ROOM,
+                store._ctx2,
+                TriggerType.ENTER_ROOM,
+            )
+
+    $ assert store._gs2.events.count_of("t.mortal") == 1, "limit=1 的事件死掉之後次數就不該再增加"
+
+    # --- helper 的順序保證 ---
+    #
+    # 寫死這個關係，免得有人之後把 VISIT_COUNTER_SEQUENCE 調到 0 以上，
+    # 上面那條「第 3 次」的斷言就會變成隨機通過。
+    $ assert visit_counter("t.x").sequence < Event(id="t.y").sequence, "計數器一定要排在一般事件前面"
+    $ assert visit_counter("t.x").limit is None, "計數器不能有次數上限"
+    $ assert visit_counter("t.x").effect is None, "計數器不該有 Effect"
+
+    # 次數判斷式是純讀取的，可以安全地重複呼叫 (熱點顯示條件每幀都會叫它)
+    python:
+        store._check = count_at_least("t.visits", 3)
+        store._v = store._gs.view()
+        store._before = store._gs.events.count_of("t.visits")
+
+        for _i in range(10):
+            store._check(store._v)
+
+    $ assert store._gs.events.count_of("t.visits") == store._before, "判斷式不該改到任何狀態"
+
+
+# 機率觸發 (Event.chance)。
+#
+# 這是「不靠計時器也能突然嚇人」的第二種做法。
+#
+# 機率怎麼測得準：renpy.random 是 Ren'Py 自己的 RNG (DetRandom)，
+# 它的 pushback() 會讓接下來幾次照指定順序發數字 ——
+# 倒帶就是靠這個機制重現骰值的，所以測試也能拿來注入固定的骰點。
+# 因此這支測試完全沒有隨機性，不會偶爾紅一次。
+testcase chance_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- 欄位驗證：寧可建房間時就爆掉 ---
+    $ assert Event(id="c.a").chance is None, "沒填 chance 就該是 None (一定觸發)"
+    $ assert Event(id="c.b", chance=0.25).chance == 0.25
+
+    # 把百分比直接填進去是最容易犯的錯，一定要擋
+    python:
+        store._err = None
+        try:
+            Event(id="c.bad", chance=25)
+        except ValueError as e:
+            store._err = str(e)
+    $ assert store._err is not None, "chance=25 (當成百分比) 應該要報錯"
+    $ assert "0.25" in store._err, "錯誤訊息應該告訴作者 25% 要寫 0.25"
+
+    python:
+        store._err2 = None
+        try:
+            Event(id="c.bad2", chance=-0.1)
+        except ValueError as e:
+            store._err2 = str(e)
+    $ assert store._err2 is not None, "負數機率應該要報錯"
+
+    # bool 是 int 的子類別，chance=True 幾乎一定是手滑
+    python:
+        store._err3 = None
+        try:
+            Event(id="c.bad3", chance=True)
+        except ValueError as e:
+            store._err3 = str(e)
+    $ assert store._err3 is not None, "chance=True 應該要報錯"
+
+    # --- 邊界值不該消耗亂數 ---
+    #
+    # 每骰一次都會強制產生一個倒帶檢查點，所以 None/0/1 要直接短路。
+    # 驗法：注入一顆骰值，呼叫邊界值幾次，那顆應該還沒被拿走。
+    python:
+        renpy.random.reset()
+        renpy.random.pushback([0.01])
+
+        store._edges = [chance_passes(None), chance_passes(1.0), chance_passes(0.0)]
+
+        # 注入的那顆還在不在，直接看 stack 的長度。
+        #
+        # 刻意不用「下一次骰到什麼」來判斷：如果邊界值真的偷骰了一顆，
+        # 下一次就會抽到一個全新的亂數，而那個數字有一半的機率
+        # 剛好也讓斷言通過 —— 那就變成偶爾才紅的測試，等於沒有偵錯能力。
+        store._stack_after_edges = len(renpy.random.stack)
+
+    $ assert store._edges == [True, True, False], f"邊界值的結果不對：{store._edges}"
+    $ assert store._stack_after_edges == 1, f"邊界值 (None/1.0/0.0) 不該消耗亂數，注入的骰值應該還在，實際剩 {store._stack_after_edges}"
+
+    # --- 骰值決定結果 ---
+    python:
+        renpy.random.reset()
+        renpy.random.pushback([0.10, 0.90])
+
+        store._rolls = [chance_passes(0.25), chance_passes(0.25)]
+
+    $ assert store._rolls == [True, False], f"0.10 該中、0.90 該不中，實際 {store._rolls}"
+
+    # --- 最重要的一條：骰輸不算觸發過，不消耗 limit ---
+    #
+    # 骰輸如果被記成一次觸發，limit=1 的機率事件第一次骰輸就死亡，
+    # 玩家永遠遇不到它。而這種 bug 只會偶爾發生，手動試玩幾乎抓不到。
+    python:
+        store._gs = GameState()
+        store._ctx = EventContext(store._gs)
+        store._ev = [
+            Event(id="c.rare", chance=0.5,
+                effect=Effect(label="c_rare"), limit=1),
+        ]
+
+        renpy.random.reset()
+        renpy.random.pushback([0.99, 0.99, 0.01])   # 輸、輸、中
+
+        # 每派發一次就立刻把狀態拍下來。
+        #
+        # 這裡踩過一次坑：本來是三次跑完才去查 count_of()，
+        # 但第 3 次骰中會把次數加成 1，所以「骰輸不該記次數」那條斷言
+        # 查到的其實是第 3 次之後的狀態，必定失敗。
+        # 要驗中途的狀態，就得在中途拍照。
+        store._out = []
+        store._counts = []
+        store._deads = []
+
+        for _i in range(3):
+            store._out.append(collect_events(
+                store._ev,
+                TriggerType.ENTER_ROOM,
+                store._ctx,
+                TriggerType.ENTER_ROOM,
+            ))
+            store._counts.append(store._gs.events.count_of("c.rare"))
+            store._deads.append(store._gs.events.is_dead("c.rare"))
+
+    # --- 骰輸的那兩次：什麼都沒發生，次數也沒動 ---
+    $ assert store._out[0] == [], f"第 1 次骰輸不該觸發，實際 {store._out[0]}"
+    $ assert store._counts[0] == 0, f"骰輸不該被記成觸發過，實際 {store._counts[0]}"
+    $ assert not store._deads[0], "骰輸不該讓事件死亡"
+
+    $ assert store._out[1] == [], f"第 2 次骰輸不該觸發，實際 {store._out[1]}"
+    $ assert store._counts[1] == 0, f"骰輸兩次還是不該記成觸發過，實際 {store._counts[1]}"
+    $ assert not store._deads[1], "骰輸兩次還是不該死亡 —— 這就是 limit 沒被消耗的證據"
+
+    # --- 第 3 次骰中：這一次才算 ---
+    $ assert store._out[2] == ["c_rare"], f"第 3 次骰中應該要觸發，實際 {store._out[2]}"
+    $ assert store._counts[2] == 1, f"骰中才算一次觸發，實際 {store._counts[2]}"
+    $ assert store._deads[2], "骰中且 limit=1，之後就該死亡"
+
+    # --- 條件不符的事件不該先骰 ---
+    #
+    # 骰點一定要排在 can_fire 之後：條件都不符的事件白骰一顆，
+    # 就白白多一個倒帶檢查點。
+    # 驗法一樣 —— 注入的那顆骰值應該還在。
+    python:
+        store._gs3 = GameState()
+        store._ctx3 = EventContext(store._gs3)
+        store._blocked = [Event(id="c.blocked", chance=0.5,
+                                condition=Condition(require=["nope"]),
+                                effect=Effect(label="c_blocked"), limit=None)]
+
+        renpy.random.reset()
+        renpy.random.pushback([0.01])
+
+        store._blocked_out = collect_events(
+            store._blocked,
+            TriggerType.ENTER_ROOM,
+            store._ctx3,
+            TriggerType.ENTER_ROOM,
+        )
+
+        # 一樣看 stack 的長度，理由同上 —— 這條如果用「下一次骰到什麼」來判斷，
+        # 破壞驗證會有一半的機率抓不到。
+        store._stack_after_blocked = len(renpy.random.stack)
+
+    $ assert store._blocked_out == [], "條件不符當然不該觸發"
+    $ assert store._stack_after_blocked == 1, f"條件不符時不該先骰機率，注入的骰值應該還在，實際剩 {store._stack_after_blocked}"
+
+    # --- demo 的衣櫃：機率事件要配一個保底 ---
+    #
+    # 骰不中時完全沒反應的話，玩家會以為熱點壞了。
+    python:
+        store._wardrobe = rooms["attic"].get_hotspot("wardrobe")
+        store._chances = [e.chance for e in store._wardrobe.events]
+
+    $ assert store._wardrobe is not None, "demo 應該有衣櫃熱點"
+    $ assert any(c is not None for c in store._chances), "衣櫃應該有一個機率事件"
+    $ assert any(c is None for c in store._chances), "衣櫃應該有一個保底事件 (骰不中時講話)"

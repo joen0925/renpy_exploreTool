@@ -328,6 +328,7 @@ label door_is_locked:
 | `sequence` | 同一個掛載點內的執行順序，小的先跑。每個房間各自獨立計算 |
 | `limit` | 最多觸發幾次，用完自動死亡。預設 `1`，`None` = 無限次 |
 | `stop` | 這個事件觸發後，就不再檢查後面的 |
+| `chance` | 觸發機率 `0.0`~`1.0`。`None` = 一定觸發。**骰輸不算觸發過**，不會消耗 `limit`。只能掛在 Event 上，不能寫進 `Hotspot.condition`（那裡每幀求值） |
 | `trigger` | 觸發時機。不填就由掛載位置決定（`Room` → 進房，`Hotspot` → 點擊） |
 
 **符合條件的事件會依 `sequence` 全部執行**，除非某個設了 `stop`。
@@ -469,6 +470,30 @@ label demo_pick_key:
 init 1 python:
     rooms = build_rooms()
 ```
+
+### 工具包多一個 section 的時候（舊存檔怎麼辦）
+
+存檔是把 `GameState` 的 `__dict__` 原樣存起來，讀檔時**不會**呼叫 `__init__`。
+所以工具包之後多一個 section（任務、鬼的計時器……），
+更早之前存的檔身上就是沒有那個屬性，一碰到就 `AttributeError`。
+
+處理方式已經內建好了，新增 section 時只要改**一個地方**：
+
+```python
+def _section_specs(self):
+    return [
+        ("inventory", InventoryState),
+        ...
+        ("quests", QuestState),   # 加這一行就好
+    ]
+```
+
+`sections()`、`ensure_sections()` 都從這張表讀，
+而 `label after_load`（Ren'Py 讀檔後自動跑）會呼叫 `ensure_sections()`
+替舊存檔補上缺的 section，已經有的進度完全不動。
+
+只有 section **整個不見**這種情況會自動補。
+section 內部的欄位改了形狀（例如某個 dict 換成 list）還是要自己寫轉換。
 
 ### 為什麼不能用 default
 
@@ -691,7 +716,7 @@ Hotspot(name="help", x=1500, y=880, label="📖 看說明",
 
 ## 自動化測試
 
-`game/explore_demo/tests.rpy` 有十份測試，在 SDK 目錄下執行：
+`game/explore_demo/tests.rpy` 有二十三份測試，在 SDK 目錄下執行：
 
 ```
 renpy.exe <專案路徑> test <測試名稱>
@@ -709,6 +734,19 @@ renpy.exe <專案路徑> test <測試名稱>
 | `event_checks` | `Condition` 四種欄位、`Effect` 六種改動、`collect_events` 的排序／stop／死亡／trigger 過濾 |
 | `inventory_flow` | 撿鑰匙 → 熱點自動消失 → 物品欄出現 → 開櫃子拿紙條 → 再點變空的 |
 | `locked_without_key` | 同一個熱點在沒鑰匙時走另一條分支，且條件不符的事件不該被算成觸發過 |
+| `actor_flow` | 角色數值走完一整條路：初始血量 → 惹鬼生氣讓熱點自己出現 → 被攻擊扣血 → **對話完整演完才死** → 跳 `game_over` |
+| `silent_death` | 沒有 label 的扣血事件也要能觸發死亡（閣樓的詛咒、生鏽的釘子） |
+| `enter_room_silent_death` | 直接 `change_room()` 進房時的無聲扣血。隔離出「label 清單是空的」那條路徑 |
+| `save_load_flow` | 存檔不會壞：房間／熱點只存名稱、還原回來就是目前那一個物件；進度則是照值存 |
+| `save_compat` | 舊存檔缺少新的 section 時，`after_load` 要補回來，而且不能洗掉既有進度 |
+| `status_display_flow` | 左上角狀態欄：列出來的要顯示、數值變了畫面要跟著變、沒列出來或沒設定過的不能漏出去 |
+| `puzzle_checks` | 關卡結果與 Effect 的對應、`Return()` 回傳 `True` 的陷阱、關卡目錄查表 |
+| `keypad_flow` | 密碼鎖三條路徑：關掉視窗什麼都不發生／答錯扣血／答對拿到東西 |
+| `rollback_through_modals` | 看完物品簡介、關掉解謎視窗之後，連按兩次「返回」不會卡在視窗裡 |
+| `pattern_checks` | 九宮格的接點規則（直線跨過的點自動接上、同一點不重用）、座標與命中判定 |
+| `pattern_flow` | 九宮格真的用滑鼠拖：關掉／點太少／畫錯／畫對 |
+| `count_trigger_checks` | 次數累積觸發：「第 3 次就是第 3 次」不能差一次、計數器不能死掉、判斷式不能有副作用 |
+| `chance_checks` | 機率觸發：骰輸不能消耗 `limit`、條件不符不能先骰、邊界值不骰、機率填成百分比要報錯。用 `renpy.random.pushback()` 注入固定骰值，所以沒有隨機性 |
 
 結果寫在專案根目錄的 `log.txt`（搜尋 `[rpytest]`），
 每個步驟的狀態則寫在 `test_trace.txt`。
