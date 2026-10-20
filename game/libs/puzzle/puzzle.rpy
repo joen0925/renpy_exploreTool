@@ -141,8 +141,19 @@ label run_puzzle(puzzle_key):
     # 而結果套用的 Effect (例如答錯扣的血) 也會一起被倒帶還原。
     $ renpy.suspend_rollback(True)
 
+    # 解謎期間世界時鐘要繼續走 —— 玩家在解鎖的時候鬼照樣逼近。
+    #
+    # 需要 suspend 是因為關卡是從熱點的 label 叫出來的，而那些 label
+    # 由 run_event_labels 執行，那裡為了對話已經把時鐘暫停了。
+    # 不讓開的話解謎全程都是暫停的 (這個 bug 真的發生過，手動測試抓到的)。
+    #
+    # 之後接 Puzzle.pausable 時，這裡改成只有 pausable=False 才讓開。
+    $ world.suspend_pauses()
+
     # 玩家在這裡操作，直到 screen 執行 Return(...)
     $ _puzzle_result = renpy.call_screen(_puzzle.screen, puzzle=_puzzle)
+
+    $ world.restore_pauses()
 
     $ renpy.suspend_rollback(False)
 

@@ -2237,3 +2237,157 @@ testcase chance_checks:
     $ assert store._wardrobe is not None, "demo 應該有衣櫃熱點"
     $ assert any(c is not None for c in store._chances), "衣櫃應該有一個機率事件"
     $ assert any(c is None for c in store._chances), "衣櫃應該有一個保底事件 (骰不中時講話)"
+
+
+# 世界時鐘 (world / WorldClock)。
+#
+# 純邏輯測試，不啟動畫面 —— tick(dt) 本來就是設計成「餵秒數就能推進」，
+# 不用真的等時間過去。
+#
+# 大部分斷言是在守 2026-10-12 手動測試抓到的兩個 bug：
+#   1. 解謎途中時鐘被外層的對話暫停壓住 (suspend_pauses 要能讓開)
+#   2. elapsed 放進被倒帶追蹤的 GameState，讀檔後時鐘看起來凍住
+#
+# 刻意用自己 new 一個 WorldClock 來驗邏輯，不去動 store.world ——
+# 動到正在跑的那個時鐘會污染其他測試。
+testcase world_clock_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- tick 會推進，而且夾上限 ---
+    python:
+        store._wc = WorldClock()
+
+        store._adv_small = store._wc.tick(0.05)
+        store._elapsed_small = store._wc.elapsed
+
+        # 夾上限：失焦或卡頓隔了 5 秒，不該讓鬼瞬間往前跳 5 秒
+        store._adv_big = store._wc.tick(5.0)
+
+    $ assert abs(store._adv_small - 0.05) < 1e-9, f"tick 應該回傳實際推進的秒數，實際 {store._adv_small}"
+    $ assert abs(store._elapsed_small - 0.05) < 1e-9, f"elapsed 應該累加，實際 {store._elapsed_small}"
+    $ assert abs(store._adv_big - WORLD_MAX_DT) < 1e-9, f"單次 tick 最多只能推進 WORLD_MAX_DT={WORLD_MAX_DT}，實際 {store._adv_big}"
+
+    # 時間不倒流
+    python:
+        store._before_neg = store._wc.elapsed
+        store._adv_neg = store._wc.tick(-3.0)
+
+    $ assert store._adv_neg == 0.0, f"負的 dt 不該推進，實際 {store._adv_neg}"
+    $ assert store._wc.elapsed == store._before_neg, "負的 dt 不該讓 elapsed 變小"
+
+    # --- 暫停 ---
+    python:
+        store._wc2 = WorldClock()
+        store._wc2.pause("dialogue")
+        store._adv_paused = store._wc2.tick(1.0)
+
+    $ assert store._wc2.paused, "pause 之後應該是暫停狀態"
+    $ assert store._adv_paused == 0.0, f"暫停時 tick 應該回傳 0，實際 {store._adv_paused}"
+    $ assert store._wc2.elapsed == 0.0, "暫停時不該累加"
+
+    # 暫停會疊：翻頁視窗開著時又跑了一段對話，
+    # 對話結束只解除對話那個理由，視窗那個還在 —— 時鐘不該偷跑。
+    # 寫成 bool 的話這一條會死，而那正是最容易的寫法。
+    python:
+        store._wc2.pause("page_popup")
+        store._wc2.resume("dialogue")
+
+    $ assert store._wc2.paused, "還有別的暫停理由在，就該繼續暫停"
+    $ assert store._wc2.tick(1.0) == 0.0, "還在暫停就不該推進"
+
+    $ store._wc2.resume("page_popup")
+    $ assert not store._wc2.paused, "所有理由都解除後才該繼續走"
+    $ assert store._wc2.tick(0.05) > 0.0, "解除暫停後應該推得動"
+
+    # 解除一個不存在的理由不該爆掉 (對話被 jump 打斷時會發生)
+    $ store._wc2.resume("never_paused_with_this")
+
+    # --- suspend_pauses：解謎途中要讓世界繼續走 ---
+    #
+    # 這是 bug 1 的回歸測試。解謎是從熱點的 label 叫出來的，
+    # 而那些 label 由 run_event_labels 執行 —— 那裡已經為了對話暫停了。
+    # run_puzzle 不把外層暫停讓開的話，解謎全程時鐘都是停的。
+    python:
+        store._wc3 = WorldClock()
+        store._wc3.pause("dialogue")
+
+        store._wc3.suspend_pauses()
+        store._susp_paused = store._wc3.paused
+        store._susp_adv = store._wc3.tick(0.05)
+
+        store._wc3.restore_pauses()
+
+    $ assert not store._susp_paused, "suspend_pauses 之後世界應該要在走 (解謎時鬼要繼續逼近)"
+    $ assert store._susp_adv > 0.0, f"suspend_pauses 期間 tick 應該推得動，實際 {store._susp_adv}"
+    $ assert store._wc3.paused, "restore_pauses 之後外層的暫停要回來"
+    $ assert "dialogue" in store._wc3.pause_reasons, f"還原的應該是原本那個理由，實際 {store._wc3.pause_reasons}"
+
+    # 嵌套：用堆疊而不是單一欄位，內層還原後外層那一份還要在
+    python:
+        store._wc4 = WorldClock()
+        store._wc4.pause("outer")
+        store._wc4.suspend_pauses()
+        store._wc4.pause("inner")
+        store._wc4.suspend_pauses()
+        store._wc4.restore_pauses()
+        store._nested_mid = set(store._wc4.pause_reasons)
+        store._wc4.restore_pauses()
+        store._nested_end = set(store._wc4.pause_reasons)
+
+    $ assert store._nested_mid == {"inner"}, f"內層還原應該拿回 inner，實際 {store._nested_mid}"
+    $ assert store._nested_end == {"outer"}, f"外層還原應該拿回 outer，實際 {store._nested_end}"
+
+    # 沒有對應的 suspend 時 restore 不該爆掉
+    $ store._wc4.restore_pauses()
+
+    # --- 驅動端的回傳值一定要是 None ---
+    #
+    # 這是整個時鐘最隱晦的地雷：Ren'Py 的畫面動作只要回傳非 None，
+    # 就等於「結束當前互動」。時鐘的 timer 接到會回傳 dt 的函式上的話，
+    # 每 0.05 秒就會把玩家正在進行的互動砍掉一次 ——
+    # 症狀是翻頁視窗/解謎視窗一打開就自己關掉。
+    # (這個 bug 真的發生過，popup 三支測試一起掛掉)
+    $ assert world_clock_tick() is None, "world_clock_tick 必須不回傳任何東西，不然 timer 會把互動吃掉"
+
+    # --- 時間不能放進被倒帶追蹤的地方 ---
+    #
+    # 這是 bug 2 的回歸測試。elapsed 每秒被改 20 次，
+    # 放進 GameState (刻意被倒帶追蹤) 的話會被倒帶反覆抹掉，
+    # 症狀是「讀檔之後時鐘凍住不動」。
+    $ assert isinstance(world, NoRollback), "world 必須是 NoRollback，不然每秒 20 次的改動會灌爆倒帶紀錄"
+    $ assert hasattr(world, "elapsed"), "elapsed 應該在 world 身上"
+    $ assert not any(_n == "world" for _n, _f in game_state._section_specs()), "世界時鐘不該是 GameState 的 section (會被倒帶抹掉)"
+
+    # 但「不被倒帶」不等於「不存檔」—— default 變數照樣會進存檔。
+    # 存檔用的就是 pickle，所以直接驗 pickle。
+    python:
+        import pickle
+
+        store._wc5 = WorldClock()
+        store._wc5.tick(0.1)
+        store._wc5_restored = pickle.loads(pickle.dumps(store._wc5))
+
+    $ assert store._wc5_restored.elapsed == store._wc5.elapsed, "存檔要留得住累積的時間"
+
+    # --- 讀檔之後時鐘不能卡在暫停 ---
+    #
+    # 暫停理由會被存進存檔，在對話中途存檔的話讀回來就還是暫停的，
+    # 時鐘從此不動。所以要有一個讀檔後清理的鉤子。
+    #
+    # 用 config.after_load_callbacks 而不是再寫一個 label after_load ——
+    # game_state.rpy 已經有一個了，同名 label 會撞車。
+    $ assert world_clock_after_load in config.after_load_callbacks, "少了讀檔清理，對話中途存檔讀回來時鐘會卡在暫停"
+
+    # 清理做的事：解除所有暫停、清掉中斷旗標、丟掉 dt 的基準點
+    python:
+        store._wc6 = WorldClock()
+        store._wc6.pause("dialogue")
+        store._wc6.pause("page_popup")
+        store._wc6.interrupt = True
+        store._wc6.last_real_time = 12345.0
+
+        store._wc6.resume_all()
+
+    $ assert not store._wc6.paused, "resume_all 應該解除所有暫停"
+    $ assert store._wc6.tick(0.05) > 0.0, "resume_all 之後時鐘要推得動"

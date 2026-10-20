@@ -469,21 +469,16 @@ Room(name="hall", events=[Event(id="hall.x", ...)])
 Room(name="hall", events=[Event(id="hall.x", trigger=TriggerType.ENTER_ROOM, ...)])
 ```
 
-`TriggerType` 定義了七種時機，但**目前只有上面兩種真的會被派發**：
+`TriggerType` 定義了三種時機，三種都會被實際派發：
 
 ```renpy
-TriggerType.ENTER_ROOM        # ✓ 已實作
-TriggerType.CLICK_HOTSPOT     # ✓ 已實作
-
-TriggerType.EXIT_ROOM         # 預留：離開房間（change_room 還沒有離開的鉤子）
-TriggerType.INTERACT          # 預留：語意還沒定義
-TriggerType.QUEST_COMPLETED   # ┐
-TriggerType.EVENT_COMPLETED   # │ 預留：由 Effect 改完狀態反過來觸發的「衍生事件」
-TriggerType.ITEM_OBTAINED     # ┘ 需要一整套 event bus，還沒做
+TriggerType.ENTER_ROOM        # 進房間，由 change_room() 派發
+TriggerType.EXIT_ROOM         # 離開房間，由 change_room() 派發
+TriggerType.CLICK_HOTSPOT     # 點熱點，由熱點的點擊派發
 ```
 
-**那為什麼要留這個欄位？** 因為之後接上 `EXIT_ROOM` 時，
-同一個 `Room.events` 清單裡會同時有進房和離房的事件，那時就需要區分：
+**那為什麼需要這個欄位？** 因為同一個 `Room.events` 清單裡
+會同時有進房和離房的事件，必須區分得出來：
 
 ```renpy
 Room(name="hall", events=[
@@ -492,7 +487,9 @@ Room(name="hall", events=[
 ])
 ```
 
-現在填了預留的那五種不會出錯，但**永遠不會被觸發**，因為沒有東西會派發它們。
+離房事件跑在進房事件**之前**：先演完「離開舊房間」，才演「進到新房間」。
+第一次進房間（還沒有舊房間可離開）不會派發 `EXIT_ROOM`。
+如果離房事件把玩家弄死了，就不會進新房間，房間停在舊的那間。
 
 ### trigger 實際做的事：過濾
 

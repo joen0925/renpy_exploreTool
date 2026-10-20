@@ -170,7 +170,20 @@ label show_pages(pages):
     # 這個旗標是記在每一筆倒帶紀錄上的，倒帶時會一起還原，不會殘留。
     $ renpy.suspend_rollback(True)
 
+    # 翻頁視窗期間世界時鐘暫停 —— 看說明、讀筆記不該被追殺。
+    # (解謎視窗刻意相反，那邊不暫停)
+    #
+    # 這個檔案本來不依賴探索工具包的任何東西，用 getattr 問一下
+    # 就是為了維持那件事：單獨複製到沒有 world 的專案也能用。
+    $ _page_world = getattr(store, "world", None)
+
+    if _page_world is not None:
+        $ _page_world.pause("page_popup")
+
     call screen page_popup(pages=pages)
+
+    if _page_world is not None:
+        $ _page_world.resume("page_popup")
 
     $ renpy.suspend_rollback(False)
 

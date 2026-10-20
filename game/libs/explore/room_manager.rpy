@@ -34,6 +34,29 @@ init python:
                 renpy.error(f"找不到名稱為 {room_target} 的房間！")
                 return
 
+        # 離開舊房間：派發 EXIT_ROOM。
+        #
+        # 一定要在下面蓋掉 current_room 之前做 —— 蓋掉之後就找不到舊房間了。
+        # 第一次進房間 (還沒有舊房間) 沒有東西可離開。
+        #
+        # default_trigger 給 ENTER_ROOM：掛在 Room.events 沒指定 trigger 的事件
+        # 預設是進房事件，所以只有明確寫了 trigger=TriggerType.EXIT_ROOM 的才會跑。
+        exit_labels = []
+
+        if current_room is not None:
+            exit_labels = collect_events(
+                current_room.events,
+                TriggerType.EXIT_ROOM,
+                EventContext(store.game_state, current_room),
+                TriggerType.ENTER_ROOM,
+            )
+
+            # 離開時就死了：不進新房間，也不派發新房間的進房事件。
+            # 不然玩家會先演完新房間的開場白才死，順序不對。
+            # 房間維持在舊的那間；死亡跳轉由 run_event_labels 處理。
+            if store.game_state.actors.is_dead(PLAYER_ACTOR):
+                renpy.call("run_event_labels", exit_labels)
+
         # 執行切換房間與鏡頭設定
         current_room = room_target
         camera.enter_room(current_room)
@@ -52,7 +75,9 @@ init python:
         # 第一階段是純 Python：檢查條件、改狀態、收集要跑的 label。
         context = EventContext(store.game_state, current_room)
 
-        labels = collect_events(
+        # 離開的 label 排在前面：先演完「離開」，再演「進來」。
+        # 兩串合成一次交給 run_event_labels —— renpy.call() 只能跳一次。
+        labels = exit_labels + collect_events(
             current_room.events,
             TriggerType.ENTER_ROOM,
             context,

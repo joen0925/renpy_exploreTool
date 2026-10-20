@@ -136,6 +136,13 @@ label run_event_labels(labels):
     # 因為 Effect 可能只扣血、不講話。
     if labels:
 
+        # 對話期間世界時鐘暫停。
+        #
+        # 時鐘搬出 explore() 之後預設一直跑，所以暫停要明確講。
+        # 不暫停的話玩家在看開場白時鬼就已經在逼近了，
+        # 而他連畫面都還沒看到。
+        $ world.pause("dialogue")
+
         hide screen explore
         show screen room_background
 
@@ -151,6 +158,8 @@ label run_event_labels(labels):
 
         hide screen room_background
         show screen explore
+
+        $ world.resume("dialogue")
 
     else:
         # 沒有 label 要跑：不切畫面 (不要白白閃一次)，

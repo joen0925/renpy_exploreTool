@@ -9,6 +9,9 @@
 #     events     每個 Event 觸發過幾次、死了沒
 #     actors     角色身上的數值 (血量、憤怒值……) 與死亡狀態
 #
+#   世界時鐘「不在」這裡 —— 它每秒被改 20 次，放進被倒帶追蹤的
+#   GameState 會被倒帶抹掉。見 game/libs/explore/world.rpy 的說明。
+#
 #   四個 section 刻意「不」共用基底類別，只約定它們都有 reset()。
 #   原因是 Ren'Py 會忽略 game/libs/ 底下第一層目錄名來決定載入順序
 #   (見 game/libs/libs.txt)，所有檔案是混在一起按檔名字母序載入的，
