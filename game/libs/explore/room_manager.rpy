@@ -61,6 +61,13 @@ init python:
         current_room = room_target
         camera.enter_room(current_room)
 
+        # 重設房間內的計時：TIMER 事件的倒數從現在開始算。
+        #
+        # 一定要排在進房事件派發之前 —— 進房事件可能講一長串話，
+        # 而對話期間時鐘是暫停的，所以講多久都不影響倒數；
+        # 但如果先派發再記時刻，那段對話就會被算進「在房間待了多久」。
+        world.mark_room_entered()
+
         # 房間背景音樂。
         #
         # music 是 None 的房間完全不碰音樂 —— 維持現在正在播的那首。

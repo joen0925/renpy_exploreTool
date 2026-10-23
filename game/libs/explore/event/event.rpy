@@ -45,6 +45,12 @@ init python:
             # 掛在 Room.events 就是 ENTER_ROOM，掛在 Hotspot.events 就是 CLICK_HOTSPOT。
             # 之後 EXIT_ROOM 接上時，同一個 list 裡混兩種時機也能正確派發。
             trigger=None,
+
+            # 進房間幾秒後觸發，單位是秒。只有 trigger=TriggerType.TIMER 能填。
+            #
+            # 從「進這個房間的那一刻」開始算，換房間會重新計時
+            # (使用者 2026-10-20 的決定：換房間本來就是躲鬼的手段)。
+            delay=None,
         ):
             self.id = id
             self.condition = condition
@@ -54,6 +60,7 @@ init python:
             self.stop = stop
             self.trigger = trigger
             self.chance = self._validate_chance(chance)
+            self.delay = self._validate_delay(delay, trigger)
 
         @staticmethod
         def _validate_chance(chance):
@@ -80,6 +87,49 @@ init python:
                 )
 
             return chance
+
+        @staticmethod
+        def _validate_delay(delay, trigger):
+            """
+            delay 與 trigger=TIMER 必須成對出現，而且要是正數。
+
+            兩種手滑都在建立房間時就爆掉，理由跟 chance 一樣 ——
+            這兩種錯誤的症狀都是「那個事件永遠不會發生」，
+            而「什麼都沒發生」靠試玩幾乎不可能發現。
+
+            特別容易踩的是只填 delay 忘了寫 trigger：掛在 Room.events
+            上的事件預設時機是 ENTER_ROOM，所以它會變成一個
+            「一進房間就觸發」的事件 —— 看起來有在動，但時間完全沒生效。
+            """
+            is_timer = (trigger == TriggerType.TIMER)
+
+            if delay is None:
+                if is_timer:
+                    raise ValueError(
+                        "trigger=TriggerType.TIMER 的 Event 一定要填 delay，"
+                        "不然不知道幾秒後要觸發。"
+                    )
+                return None
+
+            if not is_timer:
+                raise ValueError(
+                    f"只有 trigger=TriggerType.TIMER 的 Event 能填 delay，收到 delay={delay!r}。\n"
+                    f"是不是忘了寫 trigger=TriggerType.TIMER？"
+                )
+
+            # bool 是 int 的子類別，delay=True 幾乎一定是手滑
+            if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+                raise ValueError(
+                    f"Event 的 delay 要填秒數 (數字)，收到 {delay!r}。"
+                )
+
+            if delay <= 0:
+                raise ValueError(
+                    f"Event 的 delay 要大於 0，收到 {delay!r}。\n"
+                    f"想要「一進房間就觸發」請用 trigger=TriggerType.ENTER_ROOM，不要用 delay=0。"
+                )
+
+            return delay
 
         def trigger_type(self, default_trigger):
             """實際的觸發時機。沒指定就用掛載位置的預設值。"""

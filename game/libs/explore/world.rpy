@@ -75,6 +75,19 @@ init python:
             # (現在 20fps，以後改 30fps 的話舊存檔就錯了)，秒數不會。
             self.elapsed = 0.0
 
+            # 進目前這個房間的那一刻，elapsed 是多少。
+            #
+            # TIMER 事件的倒數是從進房間開始算的，所以「現在在這個房間待了多久」
+            # 就是 elapsed - room_entered_at。
+            #
+            # 換房間時重設這個值 —— 這一個動作同時實現了兩件事：
+            # 「倒數從進房間開始算」與「換房間重置倒數」。
+            # (使用者 2026-10-20 的決定：換房間本來就是躲鬼的手段。
+            #  代價是來回走可以躲掉鬼，但躲的時候什麼進度都做不了，會自己收斂)
+            #
+            # 讀檔不用特別處理：這個值跟 elapsed 都在存檔裡，兩個是同一個基準。
+            self.room_entered_at = 0.0
+
             # 正在暫停的理由 (字串)。
             #
             # 用 set 而不是 bool，因為暫停會疊：翻頁視窗開著的時候
@@ -184,6 +197,23 @@ init python:
         def reset_elapsed(self):
             """把時鐘歸零。開新遊戲或章節換場用。"""
             self.elapsed = 0.0
+            self.room_entered_at = 0.0
+
+        # --- 房間內的計時 ---
+
+        @property
+        def time_in_room(self):
+            """在目前這個房間待了多少秒。TIMER 事件的倒數就是看這個。"""
+            return self.elapsed - self.room_entered_at
+
+        def mark_room_entered(self):
+            """
+            重設房間內的計時。change_room() 進到新房間時呼叫。
+
+            刻意不叫 reset_timers() 之類的名字 —— 它記錄的是「進房間的時刻」，
+            重置只是這件事的結果。
+            """
+            self.room_entered_at = self.elapsed
 
         def tick_real_time(self):
             """

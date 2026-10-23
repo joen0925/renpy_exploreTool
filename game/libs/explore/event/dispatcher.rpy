@@ -75,6 +75,37 @@ init python:
         return labels
 
 
+    def due_timer_events(events, time_in_room):
+        """
+        挑出「時間已經到了」的 TIMER 事件，依 sequence 由小到大排序。
+
+        events         要檢查的 Event 清單 (Room.events)
+        time_in_room   在這個房間待了幾秒 (world.time_in_room)
+
+        **這個函式只管時間，不管能不能觸發。**
+        條件、機率、limit、死亡與否一律留給 collect_events ——
+        分開的理由是這兩件事的答案會各自改變：
+        時間到了但條件不符，是「還不能發生」不是「沒到時間」。
+
+        排序用 sequence 而不是到點的先後，因為使用者 2026-10-20 決定
+        同時有多個事件到點時「只放最重要的那個」，
+        而 sequence 在這個專案裡本來就是「誰比較重要／誰先跑」的意思。
+
+        純函式，不改任何狀態，所以餵假的秒數就能測完，不用等時間過去。
+        """
+        if not events:
+            return []
+
+        due = [
+            event for event in events
+            if event.trigger == TriggerType.TIMER
+            and event.delay is not None
+            and time_in_room >= event.delay
+        ]
+
+        return sorted(due, key=lambda e: e.sequence)
+
+
     def find_duplicate_event_ids(rooms):
         """
         檢查所有房間裡有沒有重複的 event id，回傳重複的 id 清單。

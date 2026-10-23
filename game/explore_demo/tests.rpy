@@ -2391,3 +2391,165 @@ testcase world_clock_checks:
 
     $ assert not store._wc6.paused, "resume_all 應該解除所有暫停"
     $ assert store._wc6.tick(0.05) > 0.0, "resume_all 之後時鐘要推得動"
+
+
+# TIMER trigger：時間驅動的事件。
+#
+# 這個 testcase 會隨著 TIMER 的實作一步一步長大。
+# 目前到第 2 步：
+#   第 1 步 (純資料) TriggerType.TIMER 與 Event.delay 的驗證
+#   第 2 步 (純邏輯) 房間內的計時與「哪些到點了」
+# 派發還沒接上。
+testcase timer_event_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- 正常情況 ---
+    python:
+        store._tev = Event(
+            id="t.ghost",
+            trigger=TriggerType.TIMER,
+            delay=20,
+            effect=Effect(label="t_ghost"),
+        )
+
+    $ assert store._tev.delay == 20, f"delay 應該存起來，實際 {store._tev.delay}"
+    $ assert Event(id="t.f", trigger=TriggerType.TIMER, delay=2.5).delay == 2.5, "小數秒數也要能填"
+
+    # 沒填 delay 的一般事件，delay 是 None
+    $ assert Event(id="t.plain").delay is None, "沒填 delay 就該是 None"
+
+    # --- delay 與 TIMER 必須成對 ---
+    python:
+        def _delay_raises(**kw):
+            try:
+                Event(id="t.bad", **kw)
+            except ValueError:
+                return True
+            return False
+
+    # 最容易犯的錯：填了 delay 卻忘了寫 trigger。
+    # 不擋的話它會變成「一進房間就觸發」—— 看起來有在動，但時間完全沒生效。
+    $ assert _delay_raises(delay=5), "填了 delay 卻沒寫 trigger=TIMER 要報錯"
+    $ assert _delay_raises(trigger=TriggerType.ENTER_ROOM, delay=5), "trigger 不是 TIMER 卻填 delay 要報錯"
+    $ assert _delay_raises(trigger=TriggerType.TIMER), "trigger=TIMER 卻沒填 delay 要報錯"
+
+    # --- delay 的值域 ---
+    $ assert _delay_raises(trigger=TriggerType.TIMER, delay=0), "delay=0 要報錯 (那是 ENTER_ROOM 的事)"
+    $ assert _delay_raises(trigger=TriggerType.TIMER, delay=-3), "負的 delay 要報錯"
+    $ assert _delay_raises(trigger=TriggerType.TIMER, delay=True), "bool 是 int 的子類別，delay=True 幾乎一定是手滑"
+    $ assert _delay_raises(trigger=TriggerType.TIMER, delay="5"), "字串要報錯"
+
+    # --- 掛在 Room.events 上不會被進房事件誤觸發 ---
+    #
+    # 這是第 1 步最重要的安全性質：TIMER 事件跟進房事件混在同一個
+    # Room.events 清單裡，進房間時絕對不能跟著一起跑
+    # (不然 delay 等於沒意義，鬼一進門就出現)。
+    python:
+        store._t_gs = GameState()
+        store._t_ctx = EventContext(store._t_gs)
+
+        store._t_mixed = [
+            Event(id="t.on_enter", effect=Effect(label="t_enter")),
+            Event(id="t.timed", trigger=TriggerType.TIMER, delay=10,
+                effect=Effect(label="t_timed")),
+        ]
+
+        # 模擬進房間的派發：Room.events 的預設時機是 ENTER_ROOM
+        store._t_enter_labels = collect_events(
+            store._t_mixed,
+            TriggerType.ENTER_ROOM,
+            store._t_ctx,
+            TriggerType.ENTER_ROOM,
+        )
+
+    $ assert store._t_enter_labels == ["t_enter"], f"進房間只該跑進房事件，實際 {store._t_enter_labels}"
+
+    # 明寫的 trigger 要蓋過掛載位置的預設值
+    $ assert store._t_mixed[1].trigger_type(TriggerType.ENTER_ROOM) == TriggerType.TIMER, "明寫 TIMER 應該蓋過 Room.events 的預設 ENTER_ROOM"
+    $ assert not store._t_mixed[1].can_fire(store._t_ctx, TriggerType.ENTER_ROOM, TriggerType.ENTER_ROOM), "TIMER 事件不該在進房派發時通過"
+
+    # ------------------------------------------------------------------
+    # 第 2 步：房間內的計時與「哪些到點了」
+    # ------------------------------------------------------------------
+
+    # --- time_in_room / mark_room_entered ---
+    #
+    # 直接設定 elapsed 來製造時間，不用真的 tick 幾百次 ——
+    # 要驗的是「到點的判斷」，時間怎麼累加起來的在 world_clock_checks 驗過了。
+    # (跟 camera 的回歸測試直接設 camera.offset 是同一個理由)
+    python:
+        store._t_wc = WorldClock()
+        store._t_wc.elapsed = 30.0
+        store._t_wc.mark_room_entered()
+
+        store._t_in_room_fresh = store._t_wc.time_in_room
+
+        store._t_wc.elapsed = 48.5
+        store._t_in_room_later = store._t_wc.time_in_room
+
+    $ assert store._t_in_room_fresh == 0.0, f"剛進房間應該是 0 秒，實際 {store._t_in_room_fresh}"
+    $ assert store._t_in_room_later == 18.5, f"待了 18.5 秒，實際 {store._t_in_room_later}"
+
+    # 換房間重置：這是使用者 2026-10-20 選的 (a) 純重置
+    $ store._t_wc.mark_room_entered()
+    $ assert store._t_wc.time_in_room == 0.0, "換房間應該把房間內的計時歸零"
+    $ assert store._t_wc.elapsed == 48.5, "換房間不該動到世界時鐘的總秒數"
+
+    # --- due_timer_events ---
+    python:
+        store._t_events = [
+            # 一般的進房事件：不管待多久都不該被挑出來
+            Event(id="t2.enter", effect=Effect(label="t2_enter")),
+
+            # 點熱點的事件：同理
+            Event(id="t2.click", trigger=TriggerType.CLICK_HOTSPOT,
+                effect=Effect(label="t2_click")),
+
+            # 三個 TIMER，delay 與 sequence 刻意「不同序」——
+            # 這樣才驗得出排序是照 sequence 而不是照 delay 或清單順序
+            Event(id="t2.late_but_important", trigger=TriggerType.TIMER, delay=10,
+                sequence=-5, effect=Effect(label="t2_important")),
+            Event(id="t2.early", trigger=TriggerType.TIMER, delay=5,
+                sequence=10, effect=Effect(label="t2_early")),
+            Event(id="t2.very_late", trigger=TriggerType.TIMER, delay=60,
+                sequence=0, effect=Effect(label="t2_very_late")),
+        ]
+
+        def _due_ids(seconds):
+            return [e.id for e in due_timer_events(store._t_events, seconds)]
+
+    $ assert _due_ids(0) == [], f"剛進房間不該有任何事件到點，實際 {_due_ids(0)}"
+    $ assert _due_ids(4.9) == [], f"還沒到 delay 就不該到點，實際 {_due_ids(4.9)}"
+
+    # 邊界：剛好等於 delay 要算到點 (用 >= 不是 >)
+    $ assert _due_ids(5) == ["t2.early"], f"剛好等於 delay 就該到點，實際 {_due_ids(5)}"
+
+    # 兩個都到點時，依 sequence 排序 —— sequence 小的在前面 (比較重要)。
+    # 注意 late_but_important 的 delay 比較晚、在清單裡也比較前面，
+    # 所以這一條如果排序寫錯 (照 delay 或照清單順序)，結果會不一樣。
+    $ assert _due_ids(10) == ["t2.late_but_important", "t2.early"], f"應該照 sequence 排序，實際 {_due_ids(10)}"
+    $ assert _due_ids(999) == ["t2.late_but_important", "t2.very_late", "t2.early"], f"全部到點也要照 sequence 排序，實際 {_due_ids(999)}"
+
+    # 非 TIMER 的事件永遠不會被挑出來，待多久都一樣
+    $ assert "t2.enter" not in _due_ids(999), "進房事件不該被當成到點的計時事件"
+    $ assert "t2.click" not in _due_ids(999), "點擊事件不該被當成到點的計時事件"
+
+    # 空清單不該出錯
+    $ assert due_timer_events([], 999) == []
+    $ assert due_timer_events(None, 999) == []
+
+    # --- 只管時間，不管能不能觸發 ---
+    #
+    # 條件不符的事件照樣會被挑出來 —— 「時間到了」跟「能不能發生」
+    # 是兩個問題，後者由 collect_events 回答。
+    # 混在一起的話，第 4 步「最重要的那個條件不符就往下找」會無從實作。
+    python:
+        store._t_blocked = [
+            Event(id="t2.blocked", trigger=TriggerType.TIMER, delay=5,
+                condition=Condition(require=["something_we_dont_have"]),
+                effect=Effect(label="t2_blocked")),
+        ]
+        store._t_blocked_due = [e.id for e in due_timer_events(store._t_blocked, 10)]
+
+    $ assert store._t_blocked_due == ["t2.blocked"], "due_timer_events 不該過濾條件，那是 collect_events 的事"
