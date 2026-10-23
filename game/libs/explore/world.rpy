@@ -88,13 +88,34 @@ init python:
             # 讀檔不用特別處理：這個值跟 elapsed 都在存檔裡，兩個是同一個基準。
             self.room_entered_at = 0.0
 
-            # 正在暫停的理由 (字串)。
+            # 正在暫停的理由 -> 這個理由被疊了幾層。
             #
-            # 用 set 而不是 bool，因為暫停會疊：翻頁視窗開著的時候
-            # 又跑了一段對話，對話結束時如果直接設成「不暫停」，
-            # 視窗還開著時鐘就偷跑了。
-            # 要所有理由都解除才會真的繼續走。
-            self.pause_reasons = set()
+            # 為什麼是計數而不是 bool，也不是 set：
+            #
+            # bool 的問題：暫停會疊。翻頁視窗開著時又跑了一段對話，
+            # 對話結束就設成「不暫停」的話，視窗還開著時鐘就偷跑了。
+            #
+            # set 的問題 (我一開始就是寫成 set，這是個 bug)：
+            # set 只解決了「不同理由」的疊加。但 run_event_labels 是
+            # 可以嵌套的 —— 事件的 label 裡呼叫 change_room() 就會在裡面
+            # 再跑一次 run_event_labels，兩層用的是同一個理由 "dialogue"。
+            # 內層結束時的 resume 會把理由整個拿掉，
+            # 外層的對話還在演，時鐘就已經在走了。
+            #
+            # 計數才能同時處理這兩種情況：pause 加一、resume 減一，
+            # 歸零才真的解除。
+            self.pause_counts = {}
+
+            # 正在派發事件 (run_event_labels) 的層數。
+            #
+            # 這是 TIMER 的重入保護：計時器到點時玩家可能正在跑一段對話，
+            # 兩段 run_event_labels 疊在一起會出事 ——
+            # 內層結束時會把探索畫面放回來 (熱點按鈕在對話中途冒出來搶走點擊)，
+            # 死亡檢查也會跑兩次。
+            # 所以計時器看到這個值大於 0 就只排隊、不發動。
+            #
+            # 跟 pause_counts 同樣的理由用計數不用 bool：嵌套。
+            self.dispatch_depth = 0
 
             # 「時間到了，該中斷玩家手上的事」的旗標。
             #
@@ -117,27 +138,36 @@ init python:
 
         def pause(self, reason):
             """
-            以某個理由暫停時鐘。同一個理由重複呼叫沒有副作用。
+            以某個理由暫停時鐘。
 
-            理由要成對解除，所以請用 resume() 配同一個字串。
+            同一個理由可以疊很多層 (嵌套的對話就是這樣)，
+            每一次 pause 都要配一次 resume 才會真的解除。
             """
-            self.pause_reasons.add(reason)
+            self.pause_counts[reason] = self.pause_counts.get(reason, 0) + 1
 
         def resume(self, reason):
             """
             解除某個暫停理由。還有別的理由在就繼續暫停。
 
+            疊了幾層就要解除幾次，歸零才真的解除。
+
             沒有這個理由時什麼都不做 (不丟例外) ——
             對話被 jump 打斷、沒跑到 resume 的情況難以完全避免，
             那時下一次 resume 不該連帶爆掉。
             """
-            self.pause_reasons.discard(reason)
+            if reason not in self.pause_counts:
+                return
+
+            self.pause_counts[reason] -= 1
+
+            if self.pause_counts[reason] <= 0:
+                del self.pause_counts[reason]
 
         def resume_all(self):
             """
             清掉所有暫停理由。讀檔之後用 (見檔案最下面)。
             """
-            self.pause_reasons.clear()
+            self.pause_counts = {}
             self.pause_stack = []
 
         def suspend_pauses(self):
@@ -153,8 +183,8 @@ init python:
             不是直接 resume("dialogue") 了事，因為解謎不該知道
             外面是為了什麼而暫停的 —— 它只知道「我這段要讓世界跑」。
             """
-            self.pause_stack.append(set(self.pause_reasons))
-            self.pause_reasons.clear()
+            self.pause_stack.append(dict(self.pause_counts))
+            self.pause_counts = {}
 
         def restore_pauses(self):
             """
@@ -164,12 +194,51 @@ init python:
             跟 resume() 一樣，流程被 jump 打斷時不該連帶爆掉。
             """
             if self.pause_stack:
-                self.pause_reasons = self.pause_stack.pop()
+                self.pause_counts = self.pause_stack.pop()
 
         @property
         def paused(self):
             """現在是不是暫停中。"""
-            return bool(self.pause_reasons)
+            return bool(self.pause_counts)
+
+        @property
+        def pause_reasons(self):
+            """
+            目前有哪些暫停理由 (不含層數)。唯讀，debug 與測試用。
+
+            要改暫停狀態請用 pause() / resume()，不要動這個。
+            """
+            return set(self.pause_counts)
+
+        # --- 派發中的重入保護 ---
+
+        def begin_dispatch(self):
+            """進入 run_event_labels 時呼叫。可以嵌套。"""
+            self.dispatch_depth += 1
+
+        def end_dispatch(self):
+            """
+            離開 run_event_labels 時呼叫。
+
+            夾在 0 以上：事件的 label 可能 jump 走而不回來
+            (死亡流程就是這樣)，那時 end_dispatch 會少呼叫一次。
+            讓它變成負數的話之後就永遠進不了「正在派發」狀態，
+            而計時器會因此在對話中途插隊。
+            """
+            self.dispatch_depth = max(0, self.dispatch_depth - 1)
+
+        def reset_dispatch(self):
+            """把派發層數歸零。讀檔之後用 (見檔案最下面)。"""
+            self.dispatch_depth = 0
+
+        @property
+        def dispatching(self):
+            """
+            現在是不是正在演事件。
+
+            計時器看到 True 就只排隊、不發動 —— 等手上這段演完再說。
+            """
+            return self.dispatch_depth > 0
 
         # --- 推進時間 ---
 
@@ -270,6 +339,14 @@ init python:
     def world_clock_after_load():
         store.world.resume_all()
         store.world.interrupt = False
+
+        # 派發層數也要歸零。
+        #
+        # 玩家在對話中途存檔的話，存檔裡的 dispatch_depth 是 1，
+        # 讀回來之後那段對話並不會繼續演 (Ren'Py 從存檔點重新開始)，
+        # 所以永遠不會有對應的 end_dispatch —— 層數就永遠掛著，
+        # 計時器從此不發動。跟暫停理由是完全同一類的坑。
+        store.world.reset_dispatch()
 
         # 讀檔那一瞬間到上次存檔之間隔了多久都無所謂，
         # 不清掉的話第一格會拿到一個很大的 dt。

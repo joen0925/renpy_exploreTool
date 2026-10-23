@@ -162,6 +162,15 @@ init python:
 # 全部跑完再恢復成可以互動的探索畫面。
 label run_event_labels(labels):
 
+    # 進入「正在派發事件」狀態，計時器在這段期間只排隊、不插隊。
+    #
+    # 放在最前面 (連 labels 是空的也算)：底下的死亡檢查會 jump 走，
+    # 那段期間同樣不該讓計時器發動。
+    #
+    # 這是計數不是旗標 —— 這個 label 會嵌套
+    # (事件的 label 裡呼叫 change_room() 就會在裡面再跑一次)。
+    $ world.begin_dispatch()
+
     # 沒有 label 要跑就不要白白閃一次畫面。
     # 注意「什麼都不做」不等於「直接 return」—— 底下的死亡檢查一定要跑到，
     # 因為 Effect 可能只扣血、不講話。
@@ -213,6 +222,13 @@ label run_event_labels(labels):
         # 跳走之前先把探索畫面收起來。
         # 上面已經 show 回去了，不收的話死亡演出期間熱點還點得到。
         hide screen explore
+
+        # 死亡流程是 jump 不是 call，不會回到這裡，所以要自己先結算。
+        # 不結算的話層數永遠掛著，重新開始之後計時器就再也不發動了。
+        $ world.end_dispatch()
+
         jump expression _death_label
+
+    $ world.end_dispatch()
 
     return

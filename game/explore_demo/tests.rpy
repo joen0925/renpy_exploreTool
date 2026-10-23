@@ -2303,6 +2303,38 @@ testcase world_clock_checks:
     # 解除一個不存在的理由不該爆掉 (對話被 jump 打斷時會發生)
     $ store._wc2.resume("never_paused_with_this")
 
+    # --- 同一個理由疊兩層：內層解除不該讓外層失效 ---
+    #
+    # 這是真實會發生的情況：run_event_labels 會嵌套 (事件的 label 裡
+    # 呼叫 change_room() 就會在裡面再跑一次)，兩層用的理由都是 "dialogue"。
+    # 寫成 set 的話內層的 resume 會把理由整個拿掉，
+    # 外層的對話還在演、時鐘就已經偷跑了。
+    # (我一開始就是寫成 set，這條就是為了守這個 bug)
+    python:
+        store._wc_nest = WorldClock()
+        store._wc_nest.pause("dialogue")      # 外層
+        store._wc_nest.pause("dialogue")      # 內層 (同一個理由)
+        store._wc_nest.resume("dialogue")     # 內層結束
+        store._nest_still_paused = store._wc_nest.paused
+        store._nest_adv = store._wc_nest.tick(0.05)
+        store._wc_nest.resume("dialogue")     # 外層結束
+        store._nest_done = store._wc_nest.paused
+
+    $ assert store._nest_still_paused, "同一個理由疊兩層，內層解除後外層還在，應該繼續暫停"
+    $ assert store._nest_adv == 0.0, f"外層還在暫停就不該推進，實際推進了 {store._nest_adv}"
+    $ assert not store._nest_done, "兩層都解除後才該繼續走"
+
+    # 多解除幾次不該讓計數變成負數 (否則之後 pause 一次會解不掉)
+    python:
+        store._wc_neg = WorldClock()
+        store._wc_neg.pause("dialogue")
+        store._wc_neg.resume("dialogue")
+        store._wc_neg.resume("dialogue")
+        store._wc_neg.resume("dialogue")
+        store._wc_neg.pause("dialogue")
+
+    $ assert store._wc_neg.paused, "多解除幾次之後，pause 一次就該暫停得了"
+
     # --- suspend_pauses：解謎途中要讓世界繼續走 ---
     #
     # 這是 bug 1 的回歸測試。解謎是從熱點的 label 叫出來的，
@@ -2553,3 +2585,54 @@ testcase timer_event_checks:
         store._t_blocked_due = [e.id for e in due_timer_events(store._t_blocked, 10)]
 
     $ assert store._t_blocked_due == ["t2.blocked"], "due_timer_events 不該過濾條件，那是 collect_events 的事"
+
+    # ------------------------------------------------------------------
+    # 第 3 步：重入保護 (正在演事件時，計時器只排隊不插隊)
+    # ------------------------------------------------------------------
+
+    python:
+        store._t_wd = WorldClock()
+        store._wd_idle = store._t_wd.dispatching
+
+        store._t_wd.begin_dispatch()
+        store._wd_in = store._t_wd.dispatching
+
+        # 嵌套：事件的 label 裡呼叫 change_room()，裡面又跑一次 run_event_labels
+        store._t_wd.begin_dispatch()
+        store._t_wd.end_dispatch()
+        store._wd_inner_done = store._t_wd.dispatching
+
+        store._t_wd.end_dispatch()
+        store._wd_all_done = store._t_wd.dispatching
+
+    $ assert not store._wd_idle, "一開始不該是派發中"
+    $ assert store._wd_in, "begin_dispatch 之後應該是派發中"
+    $ assert store._wd_inner_done, "內層結束時外層還在演，應該仍是派發中 (寫成 bool 的話這條會死)"
+    $ assert not store._wd_all_done, "兩層都結束才該離開派發中"
+
+    # 多結算幾次不該變成負數。
+    #
+    # 死亡流程是 jump 走不回來的，所以 end_dispatch 有可能少呼叫 ——
+    # 反過來若讓層數變成負數，之後就再也進不了「派發中」狀態，
+    # 計時器會在對話中途插隊。
+    python:
+        store._t_wd.end_dispatch()
+        store._t_wd.end_dispatch()
+        store._t_wd.begin_dispatch()
+        store._wd_after_underflow = store._t_wd.dispatching
+
+    $ assert store._wd_after_underflow, "多結算幾次之後，begin_dispatch 一次就該進得了派發中"
+
+    # 讀檔要能把層數清掉。
+    #
+    # 玩家在對話中途存檔，存檔裡的層數是 1，但讀回來那段對話不會繼續演，
+    # 永遠不會有對應的 end_dispatch —— 不清的話計時器從此不發動。
+    # 跟暫停理由是完全同一類的坑。
+    python:
+        store._t_wd2 = WorldClock()
+        store._t_wd2.begin_dispatch()
+        store._t_wd2.begin_dispatch()
+        store._t_wd2.reset_dispatch()
+
+    $ assert not store._t_wd2.dispatching, "reset_dispatch 應該把層數歸零"
+    $ assert world_clock_after_load in config.after_load_callbacks, "讀檔清理必須掛著，不然對話中途存檔會讓計時器永遠不發動"
