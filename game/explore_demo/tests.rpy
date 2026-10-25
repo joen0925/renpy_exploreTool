@@ -2277,12 +2277,24 @@ testcase world_clock_checks:
     $ assert store._wc.elapsed == store._before_neg, "負的 dt 不該讓 elapsed 變小"
 
     # --- 暫停 ---
+    #
+    # 暫停計數「不在」時鐘物件身上，而是放在被倒帶追蹤的 store 變數
+    # (world_pause_counts)，所以下面用全域的 world 來驗，
+    # 每一段開頭先 resume_all() 清乾淨。
+    #
+    # 為什麼不放在物件上：倒帶會重播 `$ world.pause("dialogue")` 那一行，
+    # 計數器如果不跟著倒回去，+1 重播了、-1 沒補回來，就永久多一層。
+    # (這個 bug 真的發生過，2026-10-25 用滑鼠滾輪倒帶測出來的)
+    #
+    # elapsed 仍然是物件自己的狀態，所以這裡還是 new 一個乾淨的時鐘來驗推進。
     python:
+        world.resume_all()
+
         store._wc2 = WorldClock()
-        store._wc2.pause("dialogue")
+        world.pause("dialogue")
         store._adv_paused = store._wc2.tick(1.0)
 
-    $ assert store._wc2.paused, "pause 之後應該是暫停狀態"
+    $ assert world.paused, "pause 之後應該是暫停狀態"
     $ assert store._adv_paused == 0.0, f"暫停時 tick 應該回傳 0，實際 {store._adv_paused}"
     $ assert store._wc2.elapsed == 0.0, "暫停時不該累加"
 
@@ -2290,18 +2302,18 @@ testcase world_clock_checks:
     # 對話結束只解除對話那個理由，視窗那個還在 —— 時鐘不該偷跑。
     # 寫成 bool 的話這一條會死，而那正是最容易的寫法。
     python:
-        store._wc2.pause("page_popup")
-        store._wc2.resume("dialogue")
+        world.pause("page_popup")
+        world.resume("dialogue")
 
-    $ assert store._wc2.paused, "還有別的暫停理由在，就該繼續暫停"
+    $ assert world.paused, "還有別的暫停理由在，就該繼續暫停"
     $ assert store._wc2.tick(1.0) == 0.0, "還在暫停就不該推進"
 
-    $ store._wc2.resume("page_popup")
-    $ assert not store._wc2.paused, "所有理由都解除後才該繼續走"
+    $ world.resume("page_popup")
+    $ assert not world.paused, "所有理由都解除後才該繼續走"
     $ assert store._wc2.tick(0.05) > 0.0, "解除暫停後應該推得動"
 
     # 解除一個不存在的理由不該爆掉 (對話被 jump 打斷時會發生)
-    $ store._wc2.resume("never_paused_with_this")
+    $ world.resume("never_paused_with_this")
 
     # --- 同一個理由疊兩層：內層解除不該讓外層失效 ---
     #
@@ -2311,14 +2323,16 @@ testcase world_clock_checks:
     # 外層的對話還在演、時鐘就已經偷跑了。
     # (我一開始就是寫成 set，這條就是為了守這個 bug)
     python:
+        world.resume_all()
         store._wc_nest = WorldClock()
-        store._wc_nest.pause("dialogue")      # 外層
-        store._wc_nest.pause("dialogue")      # 內層 (同一個理由)
-        store._wc_nest.resume("dialogue")     # 內層結束
-        store._nest_still_paused = store._wc_nest.paused
+
+        world.pause("dialogue")               # 外層
+        world.pause("dialogue")               # 內層 (同一個理由)
+        world.resume("dialogue")              # 內層結束
+        store._nest_still_paused = world.paused
         store._nest_adv = store._wc_nest.tick(0.05)
-        store._wc_nest.resume("dialogue")     # 外層結束
-        store._nest_done = store._wc_nest.paused
+        world.resume("dialogue")              # 外層結束
+        store._nest_done = world.paused
 
     $ assert store._nest_still_paused, "同一個理由疊兩層，內層解除後外層還在，應該繼續暫停"
     $ assert store._nest_adv == 0.0, f"外層還在暫停就不該推進，實際推進了 {store._nest_adv}"
@@ -2326,14 +2340,14 @@ testcase world_clock_checks:
 
     # 多解除幾次不該讓計數變成負數 (否則之後 pause 一次會解不掉)
     python:
-        store._wc_neg = WorldClock()
-        store._wc_neg.pause("dialogue")
-        store._wc_neg.resume("dialogue")
-        store._wc_neg.resume("dialogue")
-        store._wc_neg.resume("dialogue")
-        store._wc_neg.pause("dialogue")
+        world.resume_all()
+        world.pause("dialogue")
+        world.resume("dialogue")
+        world.resume("dialogue")
+        world.resume("dialogue")
+        world.pause("dialogue")
 
-    $ assert store._wc_neg.paused, "多解除幾次之後，pause 一次就該暫停得了"
+    $ assert world.paused, "多解除幾次之後，pause 一次就該暫停得了"
 
     # --- suspend_pauses：解謎途中要讓世界繼續走 ---
     #
@@ -2341,37 +2355,40 @@ testcase world_clock_checks:
     # 而那些 label 由 run_event_labels 執行 —— 那裡已經為了對話暫停了。
     # run_puzzle 不把外層暫停讓開的話，解謎全程時鐘都是停的。
     python:
+        world.resume_all()
         store._wc3 = WorldClock()
-        store._wc3.pause("dialogue")
 
-        store._wc3.suspend_pauses()
-        store._susp_paused = store._wc3.paused
+        world.pause("dialogue")
+
+        world.suspend_pauses()
+        store._susp_paused = world.paused
         store._susp_adv = store._wc3.tick(0.05)
 
-        store._wc3.restore_pauses()
+        world.restore_pauses()
 
     $ assert not store._susp_paused, "suspend_pauses 之後世界應該要在走 (解謎時鬼要繼續逼近)"
     $ assert store._susp_adv > 0.0, f"suspend_pauses 期間 tick 應該推得動，實際 {store._susp_adv}"
-    $ assert store._wc3.paused, "restore_pauses 之後外層的暫停要回來"
-    $ assert "dialogue" in store._wc3.pause_reasons, f"還原的應該是原本那個理由，實際 {store._wc3.pause_reasons}"
+    $ assert world.paused, "restore_pauses 之後外層的暫停要回來"
+    $ assert "dialogue" in world.pause_reasons, f"還原的應該是原本那個理由，實際 {world.pause_reasons}"
 
     # 嵌套：用堆疊而不是單一欄位，內層還原後外層那一份還要在
     python:
-        store._wc4 = WorldClock()
-        store._wc4.pause("outer")
-        store._wc4.suspend_pauses()
-        store._wc4.pause("inner")
-        store._wc4.suspend_pauses()
-        store._wc4.restore_pauses()
-        store._nested_mid = set(store._wc4.pause_reasons)
-        store._wc4.restore_pauses()
-        store._nested_end = set(store._wc4.pause_reasons)
+        world.resume_all()
+        world.pause("outer")
+        world.suspend_pauses()
+        world.pause("inner")
+        world.suspend_pauses()
+        world.restore_pauses()
+        store._nested_mid = set(world.pause_reasons)
+        world.restore_pauses()
+        store._nested_end = set(world.pause_reasons)
 
     $ assert store._nested_mid == {"inner"}, f"內層還原應該拿回 inner，實際 {store._nested_mid}"
     $ assert store._nested_end == {"outer"}, f"外層還原應該拿回 outer，實際 {store._nested_end}"
 
     # 沒有對應的 suspend 時 restore 不該爆掉
-    $ store._wc4.restore_pauses()
+    $ world.restore_pauses()
+    $ world.resume_all()
 
     # --- 驅動端的回傳值一定要是 None ---
     #
@@ -2402,6 +2419,18 @@ testcase world_clock_checks:
 
     $ assert store._wc5_restored.elapsed == store._wc5.elapsed, "存檔要留得住累積的時間"
 
+    # 光是「物件 pickle 得起來」不夠 —— 還要確認 world 這個變數真的會被存檔收進去。
+    #
+    # Ren'Py 只存「init 之後被改過」的變數 (renpy.game.log.get_roots 的註解)。
+    # 而 world 是 NoRollback，改 world.elapsed 動的是物件內部，
+    # 完全沒碰到 world 這個變數本身 —— 所以這件事值得一條斷言守著。
+    # 沒進 roots 的話，讀檔會拿到一個全新的時鐘 (時間歸零)。
+    python:
+        store._roots = renpy.game.log.get_roots()
+        store._world_in_roots = "store.world" in store._roots
+
+    $ assert store._world_in_roots, "world 必須在存檔的 roots 裡，不然讀檔會拿到一個全新的時鐘"
+
     # --- 讀檔之後時鐘不能卡在暫停 ---
     #
     # 暫停理由會被存進存檔，在對話中途存檔的話讀回來就還是暫停的，
@@ -2414,15 +2443,42 @@ testcase world_clock_checks:
     # 清理做的事：解除所有暫停、清掉中斷旗標、丟掉 dt 的基準點
     python:
         store._wc6 = WorldClock()
-        store._wc6.pause("dialogue")
-        store._wc6.pause("page_popup")
-        store._wc6.interrupt = True
-        store._wc6.last_real_time = 12345.0
 
-        store._wc6.resume_all()
+        world.pause("dialogue")
+        world.pause("page_popup")
+        world.interrupt = True
+        world.last_real_time = 12345.0
 
-    $ assert not store._wc6.paused, "resume_all 應該解除所有暫停"
+        world.resume_all()
+
+    $ assert not world.paused, "resume_all 應該解除所有暫停"
     $ assert store._wc6.tick(0.05) > 0.0, "resume_all 之後時鐘要推得動"
+
+    # --- 這些狀態必須被倒帶追蹤 ---
+    #
+    # 倒帶會重播 `$ world.pause(...)` 這種語句。計數器如果放在
+    # NoRollback 的時鐘物件上，+1 會被重播、-1 不會補回來，
+    # 每倒帶一次就永久多一層 —— 時鐘從此不動。
+    # 所以它們必須是普通的 store 變數 (會被倒帶還原)，
+    # 而 elapsed 相反，必須留在 NoRollback 上 (每秒改 20 次)。
+    python:
+        store._rb_roots = renpy.game.log.get_roots()
+        store._tracked = (
+            "store.world_pause_counts" in store._rb_roots
+            and "store.world_dispatch_depth" in store._rb_roots
+            and "store.world_pause_stack" in store._rb_roots
+        )
+
+    $ assert store._tracked, "暫停計數與派發層數必須是被倒帶追蹤的 store 變數，不能放在 NoRollback 的時鐘上"
+    $ assert not hasattr(world, "pause_counts"), "計數不該又在時鐘物件上留一份 (兩份會不同步)"
+    $ assert not hasattr(world, "dispatch_depth"), "派發層數不該又在時鐘物件上留一份"
+
+    # 收尾：不要把全域時鐘留在暫停狀態，不然後面的測試與遊戲本體會被影響
+    python:
+        world.resume_all()
+        world.reset_dispatch()
+        world.interrupt = False
+        world.last_real_time = None
 
 
 # TIMER trigger：時間驅動的事件。
@@ -2590,20 +2646,23 @@ testcase timer_event_checks:
     # 第 3 步：重入保護 (正在演事件時，計時器只排隊不插隊)
     # ------------------------------------------------------------------
 
+    # 派發層數放在被倒帶追蹤的 store 變數 (world_dispatch_depth)，
+    # 不在時鐘物件上，所以這裡用全域的 world 驗，開頭先歸零。
     python:
-        store._t_wd = WorldClock()
-        store._wd_idle = store._t_wd.dispatching
+        world.reset_dispatch()
 
-        store._t_wd.begin_dispatch()
-        store._wd_in = store._t_wd.dispatching
+        store._wd_idle = world.dispatching
+
+        world.begin_dispatch()
+        store._wd_in = world.dispatching
 
         # 嵌套：事件的 label 裡呼叫 change_room()，裡面又跑一次 run_event_labels
-        store._t_wd.begin_dispatch()
-        store._t_wd.end_dispatch()
-        store._wd_inner_done = store._t_wd.dispatching
+        world.begin_dispatch()
+        world.end_dispatch()
+        store._wd_inner_done = world.dispatching
 
-        store._t_wd.end_dispatch()
-        store._wd_all_done = store._t_wd.dispatching
+        world.end_dispatch()
+        store._wd_all_done = world.dispatching
 
     $ assert not store._wd_idle, "一開始不該是派發中"
     $ assert store._wd_in, "begin_dispatch 之後應該是派發中"
@@ -2616,10 +2675,10 @@ testcase timer_event_checks:
     # 反過來若讓層數變成負數，之後就再也進不了「派發中」狀態，
     # 計時器會在對話中途插隊。
     python:
-        store._t_wd.end_dispatch()
-        store._t_wd.end_dispatch()
-        store._t_wd.begin_dispatch()
-        store._wd_after_underflow = store._t_wd.dispatching
+        world.end_dispatch()
+        world.end_dispatch()
+        world.begin_dispatch()
+        store._wd_after_underflow = world.dispatching
 
     $ assert store._wd_after_underflow, "多結算幾次之後，begin_dispatch 一次就該進得了派發中"
 
@@ -2629,10 +2688,195 @@ testcase timer_event_checks:
     # 永遠不會有對應的 end_dispatch —— 不清的話計時器從此不發動。
     # 跟暫停理由是完全同一類的坑。
     python:
-        store._t_wd2 = WorldClock()
-        store._t_wd2.begin_dispatch()
-        store._t_wd2.begin_dispatch()
-        store._t_wd2.reset_dispatch()
+        world.reset_dispatch()
+        world.begin_dispatch()
+        world.begin_dispatch()
+        world.reset_dispatch()
 
-    $ assert not store._t_wd2.dispatching, "reset_dispatch 應該把層數歸零"
+    $ assert not world.dispatching, "reset_dispatch 應該把層數歸零"
     $ assert world_clock_after_load in config.after_load_callbacks, "讀檔清理必須掛著，不然對話中途存檔會讓計時器永遠不發動"
+
+    # ------------------------------------------------------------------
+    # 第 4 步：max_fires（同時到點時只放最重要的那一個）
+    # ------------------------------------------------------------------
+
+    # --- 只放一個，而且是 sequence 最小的那個 ---
+    python:
+        store._mf_gs = GameState()
+        store._mf_ctx = EventContext(store._mf_gs)
+
+        store._mf_events = [
+            Event(
+                id="mf.important",
+                trigger=TriggerType.TIMER,
+                delay=5,
+                sequence=-5,
+                effect=Effect(label="mf_important"),
+            ),
+            Event(
+                id="mf.also_due",
+                trigger=TriggerType.TIMER,
+                delay=5,
+                sequence=0,
+                effect=Effect(label="mf_also_due"),
+            ),
+        ]
+
+        store._mf_due = due_timer_events(store._mf_events, 10)
+        store._mf_labels = collect_events(
+            store._mf_due,
+            TriggerType.TIMER,
+            store._mf_ctx,
+            TriggerType.TIMER,
+            max_fires=1,
+        )
+
+    $ assert store._mf_labels == ["mf_important"], f"只該放最重要的那一個，實際 {store._mf_labels}"
+
+    # 沒被放的那個不能被消耗掉 —— 次數不加、也不該死亡，
+    # 不然它下次就永遠不會發生了
+    $ assert store._mf_gs.events.count_of("mf.also_due") == 0, "沒被放的事件不該被記成觸發過"
+    $ assert not store._mf_gs.events.is_dead("mf.also_due"), "沒被放的事件不該死亡"
+    $ assert store._mf_gs.events.count_of("mf.important") == 1, "被放的那個要記一次"
+
+    # --- 最重要的那個條件不成立時要往下找 (使用者 2026-10-21 選的 (ii)) ---
+    #
+    # 這是 max_fires 不能寫成「外面挑一個送進來」的理由：
+    # 那樣做的話，一個條件沒滿足的高優先事件會把整件事吞掉，
+    # 玩家什麼都沒發生，而這種 bug 最難查。
+    python:
+        store._mf_gs2 = GameState()
+        store._mf_ctx2 = EventContext(store._mf_gs2)
+
+        store._mf_blocked = [
+            Event(
+                id="mf.blocked_important",
+                trigger=TriggerType.TIMER,
+                delay=5,
+                sequence=-5,
+                condition=Condition(require=["we_dont_have_this"]),
+                effect=Effect(label="mf_blocked"),
+            ),
+            Event(
+                id="mf.fallback",
+                trigger=TriggerType.TIMER,
+                delay=5,
+                sequence=0,
+                effect=Effect(label="mf_fallback"),
+            ),
+        ]
+
+        store._mf_labels2 = collect_events(
+            due_timer_events(store._mf_blocked, 10),
+            TriggerType.TIMER,
+            store._mf_ctx2,
+            TriggerType.TIMER,
+            max_fires=1,
+        )
+
+    $ assert store._mf_labels2 == ["mf_fallback"], f"最重要的那個條件不成立時應該往下找，實際 {store._mf_labels2}"
+    $ assert store._mf_gs2.events.count_of("mf.blocked_important") == 0, "條件不符的事件不該被記成觸發過"
+
+    # --- max_fires=None 要維持原本的行為 (全部放) ---
+    #
+    # 這個參數是新加的，既有的呼叫端 (進房、點熱點) 都沒傳，
+    # 所以預設一定要跟以前一樣。
+    python:
+        store._mf_gs3 = GameState()
+        store._mf_all = collect_events(
+            [
+                Event(id="mf.a", sequence=0, effect=Effect(label="mf_a")),
+                Event(id="mf.b", sequence=1, effect=Effect(label="mf_b")),
+            ],
+            TriggerType.ENTER_ROOM,
+            EventContext(store._mf_gs3),
+            TriggerType.ENTER_ROOM,
+        )
+
+    $ assert store._mf_all == ["mf_a", "mf_b"], f"沒傳 max_fires 就該全部放，實際 {store._mf_all}"
+
+    # --- 計時事件的 limit 只能是 1 ---
+    #
+    # 時間過了之後會「一直」是已經過了，所以 limit 不是 1 的計時事件
+    # 會在同一趟進房間裡每 0.2 秒重複觸發。
+    # 擋在建立房間的當下，而不是等玩家被無限轟炸才發現。
+    $ assert _delay_raises(trigger=TriggerType.TIMER, delay=5, limit=None), "計時事件不准設成無限次"
+    $ assert _delay_raises(trigger=TriggerType.TIMER, delay=5, limit=2), "limit=2 也會在 0.2 秒內連放兩次，要擋"
+    $ assert Event(id="t.ok", trigger=TriggerType.TIMER, delay=5, limit=1).delay == 5, "明寫 limit=1 要能過"
+
+    # demo 的實驗區應該有一個可以實際玩到的計時事件
+    python:
+        store._pg_timed = [
+            _e for _e in rooms["playground"].events
+            if _e.trigger == TriggerType.TIMER
+        ]
+
+    $ assert store._pg_timed, "實驗區應該有一個計時事件可以實際測試"
+    $ assert store._pg_timed[0].delay > 0
+
+    # ------------------------------------------------------------------
+    # next_timer_wait：要不要「設鬧鐘」，以及睡多久
+    # ------------------------------------------------------------------
+    #
+    # 這關係到倒帶檢查點：renpy.pause 沒有時間限制時會留檢查點、
+    # 有時間限制時不會。所以回傳 None (不設鬧鐘) 的房間，
+    # 檢查點行為要跟沒有計時器的年代完全一樣。
+
+    python:
+        store._nw_gs = GameState()
+
+        store._nw_plain = [
+            Event(id="nw.enter", effect=Effect(label="nw_enter")),
+            Event(id="nw.click", trigger=TriggerType.CLICK_HOTSPOT,
+                effect=Effect(label="nw_click")),
+        ]
+
+        store._nw_timed = [
+            Event(id="nw.t10", trigger=TriggerType.TIMER, delay=10,
+                effect=Effect(label="nw_t10")),
+            Event(id="nw.t25", trigger=TriggerType.TIMER, delay=25,
+                effect=Effect(label="nw_t25")),
+        ]
+
+    # 沒有計時事件的房間 -> 不設鬧鐘
+    $ assert next_timer_wait([], 0, store._nw_gs) is None, "空清單不該設鬧鐘"
+    $ assert next_timer_wait(None, 0, store._nw_gs) is None, "None 不該設鬧鐘"
+    $ assert next_timer_wait(store._nw_plain, 999, store._nw_gs) is None, "只有進房/點擊事件的房間不該設鬧鐘 (不然檢查點回不來)"
+
+    # 有計時事件 -> 睡到「最近的那一個」到點
+    $ assert next_timer_wait(store._nw_timed, 0, store._nw_gs) == 10, f"剛進房間應該睡 10 秒，實際 {next_timer_wait(store._nw_timed, 0, store._nw_gs)}"
+    $ assert abs(next_timer_wait(store._nw_timed, 2.7, store._nw_gs) - 7.3) < 1e-9, "待了 2.7 秒應該睡 7.3 秒"
+    # 過期但還活著 = 它現在就該觸發了，所以要立刻醒來 (回傳下限)，
+    # 不是跑去等下一個。等下一個是「前一個已經死掉」才會發生的事。
+    $ assert next_timer_wait(store._nw_timed, 12, store._nw_gs) == WORLD_WAIT_FLOOR, f"過期但還活著的事件應該讓迴圈立刻醒來，實際 {next_timer_wait(store._nw_timed, 12, store._nw_gs)}"
+
+    # 時間已經過了 -> 夾在下限，不能回傳 0 或負數 (會空轉燒 CPU)
+    $ assert next_timer_wait(store._nw_timed, 10, store._nw_gs) == WORLD_WAIT_FLOOR, "剛好到點時要回傳下限"
+    $ assert next_timer_wait(store._nw_timed, 999, store._nw_gs) == WORLD_WAIT_FLOOR, "全部過期時要回傳下限，不能是負數"
+
+    # --- 死掉的計時事件不該讓房間一直掛著鬧鐘 ---
+    #
+    # 這條最容易漏：事件放完就死了，如果還把它算進來，
+    # 這個房間會永遠停在「有鬧鐘」的狀態 —— 於是倒帶檢查點永遠回不來，
+    # 而畫面上完全看不出有什麼不對。
+    python:
+        store._nw_gs2 = GameState()
+        store._nw_gs2.events.record_trigger("nw.t10", 1)
+        store._nw_gs2.events.record_trigger("nw.t25", 1)
+
+        store._nw_all_dead = next_timer_wait(store._nw_timed, 0, store._nw_gs2)
+
+    $ assert store._nw_gs2.events.is_dead("nw.t10"), "這個測試的前提是事件已經死了"
+    $ assert store._nw_all_dead is None, "計時事件都死了之後就不該再設鬧鐘 (不然檢查點永遠回不來)"
+
+    # 只死一個 -> 還是要等活著的那個
+    python:
+        store._nw_gs3 = GameState()
+        store._nw_gs3.events.record_trigger("nw.t10", 1)
+        store._nw_half = next_timer_wait(store._nw_timed, 0, store._nw_gs3)
+
+    $ assert store._nw_half == 25, f"活著的那個還是要等，應該是 25，實際 {store._nw_half}"
+
+    # 這才是「睡到下一個」真正會發生的情況：第一個已經觸發過而死掉，
+    # 時間也已經超過它，所以輪到等第二個 (25-12)。
+    $ assert next_timer_wait(store._nw_timed, 12, store._nw_gs3) == 13, f"第一個死掉之後應該睡到第二個，實際 {next_timer_wait(store._nw_timed, 12, store._nw_gs3)}"

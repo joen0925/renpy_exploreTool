@@ -21,7 +21,7 @@
 
 init python:
 
-    def collect_events(events, trigger, context, default_trigger=None):
+    def collect_events(events, trigger, context, default_trigger=None, max_fires=None):
         """
         第一階段：檢查條件、套用狀態改動，回傳要依序執行的 label 清單。
 
@@ -29,11 +29,22 @@ init python:
         trigger          這次派發的觸發時機 (TriggerType)
         context          EventContext
         default_trigger  Event 沒指定 trigger 時採用的時機
+        max_fires        最多讓幾個 Event 真的觸發。None = 不限
+
+        max_fires 是給 TIMER 用的：同時有好幾個計時事件到點時，
+        使用者決定「只放最重要的那一個」(sequence 最小的)。
+        但「最重要的那個」條件不一定成立 —— 所以不能在外面挑好一個就送進來，
+        要讓這裡照 sequence 一路試下去，**第一個條件真的過得了的**才算，
+        之後的就不放了。
+        (如果外面只挑一個送進來，那個條件不符時會變成什麼都沒發生 ——
+        一個條件沒滿足的高優先事件就把鬼的到來整個吞掉了)
 
         這個函式「不會」跳轉，也不會碰畫面，跑完才由 run_event_labels 接手。
         """
         if not events:
             return []
+
+        fires = 0
 
         if default_trigger is None:
             default_trigger = trigger
@@ -68,6 +79,12 @@ init python:
 
             # 記錄觸發次數，次數用完會自動轉成死亡
             game_state.events.record_trigger(event.id, event.limit)
+
+            # 這裡才算「真的觸發了」—— 條件不符與骰輸都走不到這一行。
+            fires += 1
+
+            if max_fires is not None and fires >= max_fires:
+                break
 
             if event.stop:
                 break
@@ -104,6 +121,54 @@ init python:
         ]
 
         return sorted(due, key=lambda e: e.sequence)
+
+
+    def next_timer_wait(events, time_in_room, game_state, floor=None):
+        """
+        還要多久才會有 TIMER 事件到點。回傳秒數，或 None。
+
+        **None 代表「不用設鬧鐘」** —— 這個房間沒有任何還活著的計時事件，
+        呼叫端可以安心睡到玩家動作為止。
+
+        這個區別很重要，不只是省電：
+        Ren'Py 的 renpy.pause「沒有時間限制時會留下倒帶檢查點，
+        有時間限制時不會」。所以回傳 None 的房間 (遊戲裡大多數房間)
+        檢查點的行為跟沒有計時器的年代完全一樣。
+
+        純函式，餵假的秒數就能測。
+        """
+        if not events:
+            return None
+
+        if floor is None:
+            # 不寫成預設參數值：game/libs/ 按檔名字母序載入，
+            # dispatcher.rpy 排在 world.rpy 前面，定義這個函式的當下
+            # WORLD_WAIT_FLOOR 還不存在。
+            floor = WORLD_WAIT_FLOOR
+
+        remaining = None
+
+        for event in events:
+            if event.trigger != TriggerType.TIMER or event.delay is None:
+                continue
+
+            # 已經觸發過而死掉的事件不用再等。
+            #
+            # 不排除的話會很難查：事件放完之後這個房間會永遠停在
+            # 「有鬧鐘」的狀態，於是倒帶檢查點也永遠回不來 ——
+            # 而畫面上完全看不出有什麼不對。
+            if game_state.events.is_dead(event.id):
+                continue
+
+            left = event.delay - time_in_room
+
+            if remaining is None or left < remaining:
+                remaining = left
+
+        if remaining is None:
+            return None
+
+        return max(floor, remaining)
 
 
     def find_duplicate_event_ids(rooms):

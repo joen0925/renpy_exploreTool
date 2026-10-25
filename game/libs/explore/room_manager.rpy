@@ -117,9 +117,85 @@ init python:
 # 要離開探索狀態時，直接從熱點的 label 裡 jump 到別的地方即可。
 label explore_loop:
     while True:
-        # hard=True 代表不能用點擊/空白鍵跳過這個暫停，
-        # 但畫面上的熱點按鈕仍然可以正常點擊。
-        $ renpy.pause(hard=True)
+        # 這個房間要不要「設鬧鐘」。
+        #
+        # 關鍵是 Ren'Py 的這條規則：renpy.pause **沒有**時間限制時會留下
+        # 倒帶檢查點，**有**時間限制時不會
+        # (renpy.pause 的原始碼：delay 不是 None 時 checkpoint=False)。
+        #
+        # 所以不能一律用定時輪詢 —— 那會讓整個遊戲在探索狀態下
+        # 一個檢查點都沒有，影響的是「讀檔從哪裡接回去」。
+        # 改成只有真的有計時事件的房間才設鬧鐘，
+        # 其他房間維持原本的寫法，檢查點的行為完全不變。
+        python:
+            _wait = None
+
+            if current_room is not None:
+                _wait = next_timer_wait(
+                    current_room.events,
+                    world.time_in_room,
+                    store.game_state,
+                )
+
+        if _wait is None:
+            # 沒有計時事件：睡到玩家動作為止 (原本的寫法，留檢查點)。
+            #
+            # hard=True 代表不能用點擊/空白鍵跳過這個暫停，
+            # 但畫面上的熱點按鈕仍然可以正常點擊。
+            $ renpy.pause(hard=True)
+
+        else:
+            # 有計時事件：睡到下一個到點時間。
+            #
+            # 醒來之後下面會重新計算，所以「提早醒」沒有任何後果 ——
+            # 玩家點熱點會打斷睡眠、系統選單期間時鐘是暫停的，
+            # 這兩種情況醒來時都還沒到點，重算之後再睡就是了。
+            # 真正要避免的是睡過頭 (事件該發生卻沒發生)，
+            # 而睡的長度就是「還剩幾秒」，不會超過。
+            $ renpy.pause(_wait, hard=True)
+
+        # 到點的計時事件在這裡派發。
+        #
+        # 為什麼派發點是這裡，而不是讓時鐘主動打斷玩家：
+        # 玩家一點熱點，上面那個 pause 就結束了，執行權跑到熱點的 label
+        # (解謎視窗就是從那裡開的)。所以底下這幾行「只會在玩家真的在閒晃
+        # 探索時」跑到 —— 那正好就是唯一適合讓事件出場的時機。
+        #
+        # 反過來若讓時鐘去打斷互動，它分不出現在是探索中的 pause 還是
+        # 解謎視窗的 call_screen —— 打斷後者等於把視窗當場關掉。
+        python:
+            _timer_labels = []
+            _timer_fired = False
+
+            # world.dispatching：正在演別的事件就不插隊，等下一輪再看。
+            if current_room is not None and not world.dispatching:
+                _due = due_timer_events(current_room.events, world.time_in_room)
+
+                if _due:
+                    # 「有沒有真的觸發」不能只看回傳的 label：
+                    # 事件可能只扣血不講話 (Effect 沒帶 label)，
+                    # 那時 label 是空的，但死亡檢查一定要跑到。
+                    # 所以比對觸發次數有沒有變。
+                    _counts_before = {}
+                    for _e in _due:
+                        _counts_before[_e.id] = store.game_state.events.count_of(_e.id)
+
+                    # max_fires=1：同時好幾個到點時只放最重要的那一個，
+                    # 但「最重要的那個」條件不成立時要往下找。
+                    _timer_labels = collect_events(
+                        _due,
+                        TriggerType.TIMER,
+                        EventContext(store.game_state, current_room),
+                        TriggerType.TIMER,
+                        max_fires=1,
+                    )
+
+                    for _e in _due:
+                        if store.game_state.events.count_of(_e.id) != _counts_before[_e.id]:
+                            _timer_fired = True
+
+        if _timer_fired:
+            call run_event_labels(_timer_labels) from _call_timer_events
 
 
 # 所有「探索中途要講話」的入口都走這裡：熱點的 action、Room.on_enter 都可以用。

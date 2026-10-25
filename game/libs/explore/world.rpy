@@ -26,7 +26,29 @@
 #
 #   ---
 #
-#   時間存在哪裡：全部都在 world 自己身上。
+#   ---
+#
+#   狀態分成兩類，分家的理由不一樣，不要混在一起：
+#
+#   A. 留在 world 物件上 (NoRollback，倒帶不動它)
+#        elapsed / room_entered_at / last_real_time
+#      理由：每秒被改 20 次。放進被倒帶追蹤的地方會被倒帶反覆抹掉。
+#
+#   B. 放在被倒帶追蹤的 store 變數 (見檔案下方的 default)
+#        world_pause_counts / world_dispatch_depth / world_pause_stack
+#      理由：這些是「成對的 +1 / -1」，而且壽命跟著**執行到哪裡**走。
+#      倒帶的本質就是把執行位置倒回去再重新執行那些語句 ——
+#      放在不被倒帶的地方的話，+1 會被重播、-1 不會補回來，
+#      計數器每倒帶一次就淨增一層，永久失衡。
+#      症狀：時鐘永遠暫停、計時器永遠認為「正在演事件」。
+#      (這個 bug 真的發生過，2026-10-25 使用者用滑鼠滾輪倒帶測出來的)
+#
+#      它們的改動頻率很低 (一段對話一次)，所以被倒帶追蹤不會有
+#      灌爆紀錄的問題 —— 那是 A 類才有的顧慮。
+#
+#   ---
+#
+#   時間存在哪裡：都在 world 自己身上。
 #
 #   存檔會存 (world 是 default 變數，Ren'Py 會把它存進存檔)，
 #   但「倒帶不會動它」—— 這是刻意的，跟 Camera 同一個待遇。
@@ -56,6 +78,16 @@ init python:
     # 時鐘的驅動頻率 (秒)。倒數計時用 20fps 綽綽有餘 ——
     # 這個 timer 跟鏡頭的 60fps 無關，鏡頭那個還留在 explore() 裡。
     WORLD_TICK_INTERVAL = 0.05
+
+    # 探索主迴圈「設鬧鐘」時的最短睡眠時間 (秒)。
+    #
+    # 為什麼需要下限：時間已經過了 delay 的時候，「還要多久到點」會是
+    # 零或負數。如果事件因為條件不符而不能觸發 (例如玩家身上有護身符)，
+    # 迴圈會一醒一醒地空轉，把 CPU 吃光。
+    #
+    # 這個值只影響那種「時間到了但觸發不了」的狀態，正常情況下
+    # 睡的是「還剩幾秒」那個真正的數字。
+    WORLD_WAIT_FLOOR = 0.2
 
 
     class WorldClock(NoRollback):
@@ -88,34 +120,9 @@ init python:
             # 讀檔不用特別處理：這個值跟 elapsed 都在存檔裡，兩個是同一個基準。
             self.room_entered_at = 0.0
 
-            # 正在暫停的理由 -> 這個理由被疊了幾層。
-            #
-            # 為什麼是計數而不是 bool，也不是 set：
-            #
-            # bool 的問題：暫停會疊。翻頁視窗開著時又跑了一段對話，
-            # 對話結束就設成「不暫停」的話，視窗還開著時鐘就偷跑了。
-            #
-            # set 的問題 (我一開始就是寫成 set，這是個 bug)：
-            # set 只解決了「不同理由」的疊加。但 run_event_labels 是
-            # 可以嵌套的 —— 事件的 label 裡呼叫 change_room() 就會在裡面
-            # 再跑一次 run_event_labels，兩層用的是同一個理由 "dialogue"。
-            # 內層結束時的 resume 會把理由整個拿掉，
-            # 外層的對話還在演，時鐘就已經在走了。
-            #
-            # 計數才能同時處理這兩種情況：pause 加一、resume 減一，
-            # 歸零才真的解除。
-            self.pause_counts = {}
-
-            # 正在派發事件 (run_event_labels) 的層數。
-            #
-            # 這是 TIMER 的重入保護：計時器到點時玩家可能正在跑一段對話，
-            # 兩段 run_event_labels 疊在一起會出事 ——
-            # 內層結束時會把探索畫面放回來 (熱點按鈕在對話中途冒出來搶走點擊)，
-            # 死亡檢查也會跑兩次。
-            # 所以計時器看到這個值大於 0 就只排隊、不發動。
-            #
-            # 跟 pause_counts 同樣的理由用計數不用 bool：嵌套。
-            self.dispatch_depth = 0
+            # 暫停計數、派發層數、暫停堆疊「不在」這個物件上 ——
+            # 它們是 B 類狀態，放在被倒帶追蹤的 store 變數裡。
+            # 理由見檔案開頭的說明。
 
             # 「時間到了，該中斷玩家手上的事」的旗標。
             #
@@ -129,11 +136,6 @@ init python:
             # 存這個是為了算 dt；它不是遊戲進度。
             self.last_real_time = None
 
-            # suspend_pauses() 暫存起來的暫停理由。
-            # 用堆疊而不是單一個欄位，這樣嵌套也不會互相蓋掉
-            # (解謎裡面又開解謎的話，內層還原之後外層的那一份還在)。
-            self.pause_stack = []
-
         # --- 暫停 ---
 
         def pause(self, reason):
@@ -143,7 +145,7 @@ init python:
             同一個理由可以疊很多層 (嵌套的對話就是這樣)，
             每一次 pause 都要配一次 resume 才會真的解除。
             """
-            self.pause_counts[reason] = self.pause_counts.get(reason, 0) + 1
+            store.world_pause_counts[reason] = store.world_pause_counts.get(reason, 0) + 1
 
         def resume(self, reason):
             """
@@ -155,20 +157,20 @@ init python:
             對話被 jump 打斷、沒跑到 resume 的情況難以完全避免，
             那時下一次 resume 不該連帶爆掉。
             """
-            if reason not in self.pause_counts:
+            if reason not in store.world_pause_counts:
                 return
 
-            self.pause_counts[reason] -= 1
+            store.world_pause_counts[reason] -= 1
 
-            if self.pause_counts[reason] <= 0:
-                del self.pause_counts[reason]
+            if store.world_pause_counts[reason] <= 0:
+                del store.world_pause_counts[reason]
 
         def resume_all(self):
             """
             清掉所有暫停理由。讀檔之後用 (見檔案最下面)。
             """
-            self.pause_counts = {}
-            self.pause_stack = []
+            store.world_pause_counts = {}
+            store.world_pause_stack = []
 
         def suspend_pauses(self):
             """
@@ -183,8 +185,14 @@ init python:
             不是直接 resume("dialogue") 了事，因為解謎不該知道
             外面是為了什麼而暫停的 —— 它只知道「我這段要讓世界跑」。
             """
-            self.pause_stack.append(dict(self.pause_counts))
-            self.pause_counts = {}
+            # 用字面值建複本，不要用 dict(...) ——
+            # Ren'Py 只把「字面值」換成可倒帶的型別，dict() 產生的是普通 dict，
+            # 放進被倒帶追蹤的堆疊裡就追蹤不到了。
+            _snapshot = {}
+            _snapshot.update(store.world_pause_counts)
+
+            store.world_pause_stack.append(_snapshot)
+            store.world_pause_counts = {}
 
         def restore_pauses(self):
             """
@@ -193,13 +201,13 @@ init python:
             沒有對應的 suspend 時什麼都不做 (不丟例外) ——
             跟 resume() 一樣，流程被 jump 打斷時不該連帶爆掉。
             """
-            if self.pause_stack:
-                self.pause_counts = self.pause_stack.pop()
+            if store.world_pause_stack:
+                store.world_pause_counts = store.world_pause_stack.pop()
 
         @property
         def paused(self):
             """現在是不是暫停中。"""
-            return bool(self.pause_counts)
+            return bool(store.world_pause_counts)
 
         @property
         def pause_reasons(self):
@@ -208,13 +216,13 @@ init python:
 
             要改暫停狀態請用 pause() / resume()，不要動這個。
             """
-            return set(self.pause_counts)
+            return set(store.world_pause_counts)
 
         # --- 派發中的重入保護 ---
 
         def begin_dispatch(self):
             """進入 run_event_labels 時呼叫。可以嵌套。"""
-            self.dispatch_depth += 1
+            store.world_dispatch_depth += 1
 
         def end_dispatch(self):
             """
@@ -225,11 +233,11 @@ init python:
             讓它變成負數的話之後就永遠進不了「正在派發」狀態，
             而計時器會因此在對話中途插隊。
             """
-            self.dispatch_depth = max(0, self.dispatch_depth - 1)
+            store.world_dispatch_depth = max(0, store.world_dispatch_depth - 1)
 
         def reset_dispatch(self):
             """把派發層數歸零。讀檔之後用 (見檔案最下面)。"""
-            self.dispatch_depth = 0
+            store.world_dispatch_depth = 0
 
         @property
         def dispatching(self):
@@ -238,7 +246,7 @@ init python:
 
             計時器看到 True 就只排隊、不發動 —— 等手上這段演完再說。
             """
-            return self.dispatch_depth > 0
+            return store.world_dispatch_depth > 0
 
         # --- 推進時間 ---
 
@@ -355,8 +363,38 @@ init python:
     config.after_load_callbacks.append(world_clock_after_load)
 
 
-# 全域唯一的世界時鐘。
+# 全域唯一的世界時鐘。時間相關的狀態都在這個物件身上 (A 類)。
 default world = WorldClock()
+
+
+# B 類狀態：成對的 +1 / -1，壽命跟著「執行到哪裡」走。
+#
+# 這三個刻意放在**普通的 store 變數**裡，而不是放在 world 物件上 ——
+# world 是 NoRollback，倒帶不會還原它身上的東西。
+#
+# 倒帶的本質是把執行位置倒回去、再重新執行那些語句。
+# 所以 `$ world.pause("dialogue")` 這一行會被重播，
+# 如果計數器不跟著倒回去，+1 重播了、-1 沒補回來，就永久多一層：
+# 時鐘永遠暫停、計時器永遠認為「正在演事件」。
+#
+# 放在被倒帶追蹤的變數裡之後，倒帶會把計數器跟執行位置一起倒回去，
+# 重播的 +1 就是從倒回後的值開始算，自然平衡。
+#
+# 不用擔心灌爆倒帶紀錄：這些一段對話才改一次，
+# 不是像 elapsed 那樣每秒 20 次。
+
+# 正在暫停的理由 -> 疊了幾層。
+# 用計數不用 bool 也不用 set：暫停會疊 (翻頁視窗 + 對話)，
+# 而且同一個理由自己也會疊 (run_event_labels 嵌套，兩層都是 "dialogue")。
+default world_pause_counts = {}
+
+# 正在派發事件 (run_event_labels) 的層數。
+# 計時器看到它大於 0 就只排隊、不插隊。
+default world_dispatch_depth = 0
+
+# suspend_pauses() 暫存起來的暫停理由。
+# 用堆疊，這樣嵌套也不會互相蓋掉 (解謎裡面又開解謎時，內層還原後外層那份還在)。
+default world_pause_stack = []
 
 
 # 時鐘的動力來源：一個沒有任何視覺的常駐畫面。

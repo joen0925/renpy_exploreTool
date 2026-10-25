@@ -45,11 +45,33 @@ init python:
             on_click="playground_open_phone",
         ))
 
+        # 計時事件 (TriggerType.TIMER) 的示範：
+        # 進這個房間 10 秒後自動發生，不用點任何東西。
+        #
+        # 倒數從進房間開始算，換房間會重新計時 (走出去再進來就重新算 10 秒)。
+        # 對話、翻頁視窗、系統選單期間時鐘是暫停的；解謎視窗**不**暫停。
+        #
+        # limit 只能是 1 (預設值)，所以整場遊戲只會發生一次 ——
+        # 想再看一次要開新遊戲。理由見 Event._validate_delay 的註解。
+        room.add_event(Event(
+            id="playground.timer_demo",
+            trigger=TriggerType.TIMER,
+            delay=10,
+            effect=Effect(label="playground_timer_demo"),
+        ))
+
         return room
 
 
 label playground_enter:
     "實驗區。這裡的東西隨便改都沒關係。"
+    "（在這裡站著別動 10 秒，會有東西自己發生。）"
+    return
+
+
+label playground_timer_demo:
+    "背後傳來腳步聲。"
+    "（這是計時事件：進房間 10 秒後自動觸發，你沒有點任何東西。）"
     return
 
 label playground_open_phone:

@@ -60,7 +60,7 @@ init python:
             self.stop = stop
             self.trigger = trigger
             self.chance = self._validate_chance(chance)
-            self.delay = self._validate_delay(delay, trigger)
+            self.delay = self._validate_delay(delay, trigger, limit)
 
         @staticmethod
         def _validate_chance(chance):
@@ -89,7 +89,7 @@ init python:
             return chance
 
         @staticmethod
-        def _validate_delay(delay, trigger):
+        def _validate_delay(delay, trigger, limit=1):
             """
             delay 與 trigger=TIMER 必須成對出現，而且要是正數。
 
@@ -127,6 +127,24 @@ init python:
                 raise ValueError(
                     f"Event 的 delay 要大於 0，收到 {delay!r}。\n"
                     f"想要「一進房間就觸發」請用 trigger=TriggerType.ENTER_ROOM，不要用 delay=0。"
+                )
+
+            # 計時事件的 limit 只能是 1 (也就是預設值)。
+            #
+            # 為什麼擋得這麼死：探索主迴圈是每 0.2 秒檢查一次「誰到點了」，
+            # 而時間一旦超過 delay 就「一直」都是超過。
+            # limit 不是 1 的話，同一趟進房間裡它會每 0.2 秒觸發一次 ——
+            # limit=None 是無限轟炸，limit=2 也會在 0.2 秒內連放兩次。
+            #
+            # 「發生一次就死」正好讓死亡的事件連條件都不再被檢查，
+            # 所以不需要另外記「這趟已經放過了」。
+            # 真的需要重複出現的鬼，之後再單獨設計 (例如換房間重新武裝)。
+            if limit != 1:
+                raise ValueError(
+                    f"trigger=TriggerType.TIMER 的 Event 的 limit 只能是 1，收到 {limit!r}。\n"
+                    f"時間過了之後會一直是「已經過了」，所以 limit 不是 1 的計時事件\n"
+                    f"會在同一趟進房間裡每 0.2 秒重複觸發。\n"
+                    f"limit 不填就是 1，通常直接拿掉就對了。"
                 )
 
             return delay
