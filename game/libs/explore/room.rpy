@@ -25,6 +25,24 @@ init python:
         return room
 
 
+    def room_bg_height(room):
+        """
+        這個房間的背景圖要畫多高。
+
+        沒填 bg_height 就是「拉滿螢幕高度」—— 也就是所有普通房間
+        在這個欄位出現之前的行為，一行都不用改。
+
+        抽成函式是為了只有一個地方寫這條規則：
+        探索畫面、對話用的純背景畫面、近景視窗都問這裡。
+        """
+        height = getattr(room, "bg_height", None)
+
+        if height is None:
+            return config.screen_height
+
+        return height
+
+
     # 繼承 NoRollback：這是場景資料，不是劇情狀態，
     # 不該被 Ren'Py 的倒帶(rollback)系統追蹤/還原，
     # 不然滑鼠滾輪不小心倒帶時，current_room 等變數可能被還原成不一致的狀態。
@@ -34,6 +52,14 @@ init python:
             name,
             background,
             bg_width=1920,
+
+            # 背景圖要畫多高。None = 拉滿螢幕高度 (普通房間都用這個)。
+            #
+            # 會需要填它的只有近景視窗 —— 那是一個浮在房間上的框，
+            # 框多大就是這張圖多大，所以寬高兩邊都得講明白。
+            # 見 game/libs/explore/closeup.rpy。
+            bg_height=None,
+
             music=None,
             hotspots=None, # 這個房間的熱點列表，預設為 None
             on_enter=None, # 進入這個房間時要自動呼叫的 label 名稱 (字串)，可以在裡面講話/做任何事
@@ -49,6 +75,7 @@ init python:
             self.name = name
             self.background = background
             self.bg_width = bg_width
+            self.bg_height = bg_height
             self.music = music
             self.on_enter = on_enter
             self.on_enter_limit = on_enter_limit

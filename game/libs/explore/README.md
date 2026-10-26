@@ -19,6 +19,9 @@ game/libs/explore/          探索引擎，不要放具體房間資料
 ├── room_manager.rpy        change_room() / explore_loop / say_in_room
 ├── explore_screen.rpy      screen explore() / room_background()
 ├── explore_debug.rpy       F9 標點面板（疊加式 overlay）
+├── world.rpy               世界時鐘（TIMER 事件的時間來源）+ 暫停規則
+├── closeup.rpy             近景視窗 open_closeup() + screen closeup
+├── state_image.rpy         state_image()：會跟著遊戲狀態換圖的背景
 └── event/                  事件系統
     ├── trigger.rpy         TriggerType
     ├── condition.rpy       Condition（只讀）

@@ -7,10 +7,9 @@
 #     ENTER_ROOM / EXIT_ROOM  由 change_room() 派發
 #     CLICK_HOTSPOT           由熱點的點擊派發
 #
-#   時間觸發的時機：
-#     TIMER                   由世界時鐘派發。**派發還沒接上** ——
-#                             目前只有 Event 的 delay 驗證在用這個名字。
-#                             正在實作中，見 pending_imp.md 的動工順序。
+#   時間觸發的時機 (已接上派發)：
+#     TIMER                   進房間幾秒後自動觸發 (Event.delay)。
+#                             由 explore_loop 派發，見 room_manager.rpy。
 ##################################################
 
 init python:

@@ -37,6 +37,15 @@ init python:
             tag="線索",
         )
 
+        # 近景視窗示範用 (實驗區的抽屜)。
+        # 拿走之後抽屜的底圖會跟著變空 —— 見 playground.rpy 的 state_image。
+        items["torn_photo"] = Item(
+            key="torn_photo",
+            name="撕成兩半的照片",
+            description="只剩右半邊。\n一隻手搭在某個人的肩膀上，\n而那個人不在這半張裡。",
+            tag="線索",
+        )
+
         items["coin10"] = Item(
             key="coin10",
             name="10元",

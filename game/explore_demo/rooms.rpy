@@ -20,6 +20,13 @@ init python:
         rooms["attic"] = build_attic()
         rooms["playground"] = build_playground()
 
+        # 近景視窗的內部。跟其他房間一樣註冊在這裡，
+        # 但玩家不會「走進」它 —— 它是被 open_closeup() 畫成一個框的。
+        #
+        # 一定要註冊：近景裡的熱點存檔時是用「房間名稱 + 熱點名稱」
+        # 還原的 (見 Hotspot.__reduce__)，沒註冊的話讀檔會失敗。
+        rooms["playground_drawer"] = build_playground_drawer()
+
         return rooms
 
 

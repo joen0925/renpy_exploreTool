@@ -24,7 +24,7 @@ screen room_background():
 
             add current_room.background:
                 xsize current_room.bg_width
-                ysize config.screen_height
+                ysize room_bg_height(current_room)
 
 
 screen explore():
@@ -47,7 +47,8 @@ screen explore():
             # 1. 顯示背景：強制將高度鎖定為螢幕高度，寬度為房間真實寬度
             add current_room.background:
                 xsize current_room.bg_width
-                ysize config.screen_height # 自動抓取遊戲設定高度 (通常是 1080)
+                # 沒填 bg_height 的房間就是拉滿螢幕高度 (見 room_bg_height)
+                ysize room_bg_height(current_room)
 
             # 2. 顯示熱點：可以直接使用絕對座標 hotspot.x / hotspot.y
             # 不需要手動加 camera.offset，因為外層的 fixed 已經幫忙位移了！

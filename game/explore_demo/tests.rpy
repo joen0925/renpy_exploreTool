@@ -1631,6 +1631,9 @@ init python:
 #
 # 「卡住」的判定方式：連按兩次「返回」。
 # 如果倒帶停在 modal 視窗裡，第二次的 click "返回" 會找不到可以點的按鈕而逾時。
+#
+# 第三個 modal 視窗 (近景視窗) 的同一組檢查在 closeup_flow 裡 ——
+# 從廚房走到實驗區要多繞五六步，而 closeup_flow 本來就站在那裡。
 testcase rollback_through_modals:
 
     $ __import__("renpy").test.testsettings._test.timeout = 20.0
@@ -2880,3 +2883,346 @@ testcase timer_event_checks:
     # 這才是「睡到下一個」真正會發生的情況：第一個已經觸發過而死掉，
     # 時間也已經超過它，所以輪到等第二個 (25-12)。
     $ assert next_timer_wait(store._nw_timed, 12, store._nw_gs3) == 13, f"第一個死掉之後應該睡到第二個，實際 {next_timer_wait(store._nw_timed, 12, store._nw_gs3)}"
+
+
+# 近景視窗的純邏輯：換圖規則、框的高度、誤用檢查。
+#
+# 這三樣全部抽成純函式，所以完全不用把視窗叫出來 ——
+# 餵假的狀態、假的房間就能驗完。
+testcase closeup_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- room_bg_height：沒填就是拉滿螢幕高 ---
+    #
+    # 這條守著「bg_height 是純加法」這件事：所有既有房間都沒填它，
+    # 行為必須跟這個欄位出現之前一模一樣。
+    python:
+        store._cu_plain = Room(name="cu_plain", background=None, bg_width=1920)
+        store._cu_framed = Room(name="cu_framed", background=None, bg_width=1280, bg_height=720)
+
+    $ assert room_bg_height(store._cu_plain) == config.screen_height, f"沒填 bg_height 的房間要拉滿螢幕高 {config.screen_height}，實際 {room_bg_height(store._cu_plain)}"
+    $ assert room_bg_height(store._cu_framed) == 720, f"填了就用填的值，實際 {room_bg_height(store._cu_framed)}"
+
+    # --- pick_state_image：由上往下試，第一個成立的就贏 ---
+    python:
+        store._cu_gs = GameState()
+
+        store._cu_cases = [
+            (Condition(require=["lamp_on", "fuse"]), "both.png"),
+            (Condition(require=["lamp_on"]), "lamp.png"),
+        ]
+
+    # 什麼都沒有 -> default
+    $ assert pick_state_image(store._cu_cases, "dark.png", store._cu_gs.view()) == "dark.png", "全都不成立時要用 default"
+
+    # 只有燈 -> 第二條 (第一條還不成立)
+    $ store._cu_gs.flags.set("lamp_on")
+    $ assert pick_state_image(store._cu_cases, "dark.png", store._cu_gs.view()) == "lamp.png", "只有燈時應該挑第二條"
+
+    # 燈加保險絲 -> 第一條，不是第二條。
+    # 這條守著「順序有意義」：兩條都成立時，寫在前面的贏。
+    $ store._cu_gs.inventory.add("fuse")
+    $ assert pick_state_image(store._cu_cases, "dark.png", store._cu_gs.view()) == "both.png", "兩條都成立時要挑寫在前面的那一條"
+
+    # 沒有任何 case 時就是 default
+    $ assert pick_state_image([], "dark.png", store._cu_gs.view()) == "dark.png", "沒有 case 就該是 default"
+
+    # 不給 view 的話會去問目前的遊戲狀態，不該爆掉
+    $ assert pick_state_image([], "dark.png") == "dark.png", "不給 view 時要能自己去問遊戲狀態"
+
+    # --- state_image 的寫法驗證 ---
+    #
+    # 這些錯誤的症狀都是「圖就是沒換」，靠試玩很難確定問題在哪，
+    # 所以寧可在 build_rooms() 當下就爆掉 (= 遊戲一啟動就看得到)。
+    python:
+        def _si_raises(*cases, **kwargs):
+            try:
+                state_image(*cases, **kwargs)
+            except (ValueError, TypeError):
+                return True
+            return False
+
+    $ assert _si_raises((Condition(require=["a"]), "a.png")), "沒填 default 要報錯 (不然某些狀態下會變全黑)"
+    $ assert _si_raises(default="d.png"), "一組 case 都沒有要報錯 (那直接寫 background= 就好)"
+    $ assert _si_raises(Condition(require=["a"]), "a.png", default="d.png"), "漏了括號、把 tuple 寫成散的參數要報錯"
+    $ assert _si_raises(("a.png",), default="d.png"), "tuple 長度不是 2 要報錯"
+    $ assert _si_raises(("not_a_condition", "a.png"), default="d.png"), "第一個不是 Condition 要報錯"
+    $ assert _si_raises((None, "a.png"), default="d.png"), "None 不是 Condition，要報錯 (想要一定成立請用 default)"
+    $ assert _si_raises((Condition(require=["a"]), "a.png"), default="d.png", wat=1), "不認得的參數要報錯"
+
+    # 寫對的話要能建起來，而且挑圖的結果跟 pick_state_image 一致
+    python:
+        store._cu_img = state_image(
+            (Condition(require=["lamp_on"]), "lamp.png"),
+            default="dark.png",
+        )
+        # DynamicDisplayable 把 (cases, default) 原樣收在 args 裡，
+        # 所以可以直接拿出來驗「建出來的東西挑圖是對的」。
+        store._cu_picked = pick_state_image(*store._cu_img.args, view=store._cu_gs.view())
+
+    $ assert store._cu_picked == "lamp.png", f"燈開著應該挑 lamp.png，實際 {store._cu_picked}"
+
+    # --- closeup_misuse：近景只處理點擊，其他時機要主動擋 ---
+    #
+    # 為什麼要擋：近景房間寫了 on_enter 的話那句開場白永遠不會播，
+    # 而畫面上完全看不出有什麼不對 —— 遊戲照跑、框照開，台詞人間蒸發。
+    python:
+        store._cu_ok = Room(
+            name="cu_ok", background=None, bg_width=1280, bg_height=720,
+            hotspots=[Hotspot(name="h", x=0, y=0, on_click="whatever")],
+        )
+
+        store._cu_no_height = Room(name="cu_nh", background=None, bg_width=1280)
+
+        store._cu_enter = Room(
+            name="cu_enter", background=None, bg_width=1280, bg_height=720,
+            on_enter="never_runs",
+        )
+
+        store._cu_music = Room(
+            name="cu_music", background=None, bg_width=1280, bg_height=720,
+            music="audio/never.ogg",
+        )
+
+        store._cu_room_event = Room(
+            name="cu_re", background=None, bg_width=1280, bg_height=720,
+            events=[Event(id="cu_re.never")],
+        )
+
+        store._cu_bad_trigger = Room(
+            name="cu_bt", background=None, bg_width=1280, bg_height=720,
+            hotspots=[Hotspot(name="h", x=0, y=0, events=[
+                Event(id="cu_bt.timed", trigger=TriggerType.TIMER, delay=5),
+            ])],
+        )
+
+    $ assert closeup_misuse(store._cu_ok) == [], f"寫對的近景房間不該有任何問題，實際 {closeup_misuse(store._cu_ok)}"
+    $ assert closeup_misuse(store._cu_no_height), "沒填 bg_height 要被抓到 (不然框會拉滿螢幕高)"
+    $ assert closeup_misuse(store._cu_enter), "on_enter 不會被執行，要被抓到"
+    $ assert closeup_misuse(store._cu_music), "music 不會被播放，要被抓到"
+    $ assert closeup_misuse(store._cu_room_event), "掛在房間上的 events 不會被執行，要被抓到"
+    $ assert closeup_misuse(store._cu_bad_trigger), "熱點事件寫了非點擊的 trigger 要被抓到"
+
+    # 熱點事件沒寫 trigger (預設就是點擊) 不該被誤報
+    python:
+        store._cu_default_trigger = Room(
+            name="cu_dt", background=None, bg_width=1280, bg_height=720,
+            hotspots=[Hotspot(name="h", x=0, y=0, events=[Event(id="cu_dt.click")])],
+        )
+
+    $ assert closeup_misuse(store._cu_default_trigger) == [], "沒寫 trigger 的熱點事件就是點擊，不該被誤報"
+
+    # 明確寫 CLICK_HOTSPOT 也不該被誤報
+    python:
+        store._cu_explicit = Room(
+            name="cu_ex", background=None, bg_width=1280, bg_height=720,
+            hotspots=[Hotspot(name="h", x=0, y=0, events=[
+                Event(id="cu_ex.click", trigger=TriggerType.CLICK_HOTSPOT),
+            ])],
+        )
+
+    $ assert closeup_misuse(store._cu_explicit) == [], "明確寫 CLICK_HOTSPOT 不該被誤報"
+
+
+# 近景視窗走一遍完整流程：
+#   開框 -> 點裡面的照片 -> 框消失、講話 -> 框回來 (照片不見了、底圖變空)
+#   -> 按 ✕ 關掉 -> 回到探索
+#
+# 另外守住四件近景的設計承諾：
+#   1. 近景期間世界時鐘照跑 (不暫停)
+#   2. 近景房間「不會」變成 current_room —— 不然開抽屜就能無限躲鬼
+#   3. 房間內的計時不會被近景重設
+#   4. 倒帶不會卡在近景視窗裡
+#
+# 第 4 點本來想加在 rollback_through_modals 裡 (那裡已經有翻頁視窗與
+# 解謎關卡兩段)，但從廚房走到實驗區要多繞五六步，逾時風險比較高。
+# 這個 testcase 本來就站在實驗區，所以放這裡。
+testcase closeup_flow:
+
+    # 70 秒不是隨便填的：這個 testcase 裡有三段刻意的等待
+    # (驗計時用的 pause 1.0 兩次、各種 pause 0.5)，再加上倒帶之後
+    # 要把整段近景往前重走一遍。40 秒會剛好不夠。
+    $ __import__("renpy").test.testsettings._test.timeout = 70.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "前往實驗區(測試區)"
+
+    # 先把實驗區的計時事件殺掉。
+    #
+    # 近景期間時鐘是「刻意繼續跑」的，所以這個測試只要跑超過 10 秒，
+    # 那個腳步聲事件就會在中間插進來，讓斷言變得看運氣。
+    # 這不是在迴避 bug —— 計時事件本身由 timer_event_checks 守著。
+    $ game_state.events.kill("playground.timer_demo")
+
+    click "前往實驗區(測試區)"
+    advance until "🗄 抽屜"
+    $ _trace("1_到了實驗區")
+
+    # 先在房間裡站一秒，讓「待了多久」累積出看得出來的量。
+    #
+    # 不這樣做的話 time_in_room 可能只有 0.0x 秒，底下那條
+    # 「近景不該重設計時」的斷言就沒有辨識力 —— 真的被重設成 0
+    # 跟本來就趨近 0 看起來一樣。
+    pause 1.0
+
+    # 順便守住「探索畫面上時鐘真的在走」。
+    # 其他地方只斷言過它「不會變小」，沒有任何一條證明它會變大 ——
+    # 驅動時鐘的是 overlay 上那個 timer，整套機制壞掉的話這裡會先叫。
+    $ assert world.elapsed > 0.5, f"在探索畫面站了一秒，時鐘應該走了約 1 秒，實際 {world.elapsed}"
+
+    # 進近景之前先記下「在房間待了多久」與底圖是哪一張
+    python:
+        _rb.cu_time_before = world.time_in_room
+        # DynamicDisplayable 把 (cases, default) 原樣收在 args 裡
+        _rb.cu_bg_before = pick_state_image(*rooms["playground_drawer"].background.args)
+
+    click "🗄 抽屜"
+
+    # 拉開抽屜那句話講完，框就會跳出來 —— 框裡的照片按鈕出現就代表到了
+    advance until "🖼 撕成兩半的照片"
+
+    $ assert renpy.get_screen("closeup") is not None, "點抽屜應該打開近景視窗"
+    $ assert not game_state.inventory.has("torn_photo"), "這個測試的前提是照片還沒拿"
+    $ _trace("2_近景視窗打開了")
+
+    # 承諾 1：近景期間時鐘照跑。
+    #
+    # 近景是從熱點的 label 叫出來的，而那些 label 由 run_event_labels 執行，
+    # 那裡為了對話把時鐘暫停了 —— 所以這裡會是「沒暫停」唯一的理由
+    # 就是 open_closeup 有正確地讓開 (world.suspend_pauses)。
+    $ assert not world.paused, f"近景期間世界時鐘不該暫停，實際暫停理由 {world.pause_reasons}"
+
+    # 承諾 2：近景房間不是 current_room
+    $ assert current_room.name == "playground", f"近景不該變成當前房間，實際 {current_room.name}"
+
+    # --- 點照片：框消失、講話 ---
+    click "🖼 撕成兩半的照片"
+    pause 0.5
+
+    $ assert renpy.get_screen("closeup") is None, "點到東西時框應該消失 (對話才不會被框蓋住)"
+    $ _trace("3_點了照片，框消失")
+
+    # 記下「正在近景的對話裡」這一刻的暫停計數與派發層數。
+    # 測試最後倒帶回到這個時刻時要跟它比對 —— 見檔尾「承諾 5」。
+    #
+    # 放在 _rb (NoRollback) 裡，不然倒帶會把這兩個值也一起還原掉，
+    # 比對就變成「自己跟自己比」，永遠成立。
+    python:
+        _rb.cu_counts_in_dialogue = dict(store.world_pause_counts)
+        _rb.cu_depth_in_dialogue = store.world_dispatch_depth
+
+    # --- 講完話框要回來 ---
+    #
+    # 用「抽屜底板」當判定：那顆按鈕只存在於近景視窗裡，
+    # 它出現就代表框真的回來了。
+    advance until "🔍 抽屜底板"
+
+    $ assert renpy.get_screen("closeup") is not None, "講完話框應該再打開"
+    $ assert game_state.inventory.has("torn_photo"), "點照片應該拿到照片"
+    $ _trace("4_框回來了，照片拿到手")
+
+    # 照片熱點要消失 —— 熱點與底圖是同一個條件的兩面
+    python:
+        _rb.cu_photo_shown = hotspot_is_shown(
+            rooms["playground_drawer"].get_hotspot("photo")
+        )
+        _rb.cu_bg_after = pick_state_image(*rooms["playground_drawer"].background.args)
+
+    $ assert not _rb.cu_photo_shown, "拿走之後照片熱點應該消失"
+    $ assert _rb.cu_bg_after != _rb.cu_bg_before, "拿走之後抽屜的底圖應該換掉 (空抽屜)"
+    $ _trace("5_熱點消失、底圖換了")
+
+    # 照片熱點不見了，但底板還在 = 框是「部分更新」不是整個重畫錯
+    assert not "🖼 撕成兩半的照片"
+
+    # --- 關掉視窗 ---
+    click "✕"
+    advance until "🗄 抽屜"
+
+    $ assert renpy.get_screen("closeup") is None, "按 ✕ 應該關掉近景視窗"
+    $ assert renpy.get_screen("explore") is not None, "關掉之後要回到探索畫面"
+    $ assert current_room.name == "playground", "關掉之後還在原本的房間"
+    $ _trace("6_關掉回到探索")
+
+    # 承諾 3：房間內的計時不會被近景重設。
+    #
+    # 如果 open_closeup 不小心呼叫了 change_room / mark_room_entered，
+    # 這個值會掉回 0 附近 —— 那玩家就能靠一直開抽屜無限躲鬼。
+    $ assert world.time_in_room >= _rb.cu_time_before, f"近景不該重設房間內的計時，進去前 {_rb.cu_time_before}、出來後 {world.time_in_room}"
+
+    # --- 承諾 4：倒帶不能卡在近景視窗裡 ---
+    #
+    # 「卡住」的判定方式跟 rollback_through_modals 一樣：連按兩次「返回」。
+    # 如果倒帶停在近景裡，近景是 modal 會擋住「返回」鈕，
+    # 第二次就會找不到可以點的按鈕而逾時。
+    click "返回"
+    pause 0.5
+    $ assert renpy.get_screen("closeup") is None, "倒帶不該回到近景視窗裡"
+    $ _trace("7_返回一次沒進近景")
+
+    click "返回"
+    pause 0.5
+    $ assert renpy.get_screen("closeup") is None, "繼續倒帶也不該回到近景視窗裡"
+    $ _trace("8_返回兩次沒卡住")
+
+    # 把測試游標從「返回」鈕上移開，不然之後推進對話等於又按了一次返回。
+    # (這個坑的完整說明見 rollback_through_modals)
+    move pos (960, 300)
+
+
+    # --- 承諾 5：倒帶穿過近景不能把暫停計數灌大 ---
+    #
+    # 這條來自使用者 2026-10-26 的手動測試：在近景裡拿照片 -> 停在對話上
+    # (時鐘暫停是對的) -> 按返回 -> 10 秒事件還能正確觸發。
+    #
+    # 背景：2026-10-25 修過一個同族的 bug —— 暫停計數原本放在 NoRollback
+    # 上，而倒帶是「把執行位置倒回去再重新執行」，所以
+    # $ world.pause("dialogue") 那一行會被重播，計數卻不跟著倒回去。
+    # +1 重播了、-1 沒補回來，於是時鐘永久停住、鬼再也不會來，
+    # 而畫面上完全看不出有什麼不對。
+    #
+    # 判定方式是「跟原本那一刻比對」，不是斷言絕對數字。
+    # 絕對數字不能用：近景裡的對話會讓 run_event_labels 嵌套
+    # (外層是「你拉開抽屜」那串)，所以 {'dialogue': 2} 在這個時刻
+    # 本來就是合法的 —— 剛好跟當初那個 bug 的數值一樣。
+    #
+    # 上面那兩次 click "返回" 剛好停在點照片後的那句對話上，
+    # 也就是第 3 步記下數值的同一個時刻。
+    #
+    # ⚠️ 這兩條能抓到什麼、抓不到什麼 (做破壞驗證時才發現的，不要誤信)：
+    #
+    #   抓得到：計數仍然放在 store 上，但倒帶前後對不起來
+    #           (例如有人把 pause/resume 改成不成對，或在倒帶紀錄之外偷改)。
+    #
+    #   抓不到：有人把計數整個搬回 NoRollback 物件上 —— 那時
+    #           store.world_pause_counts 會永遠是 {}，倒帶前後都是 {}，
+    #           這兩條會「相等」而通過，但真正的 bug 已經回來了。
+    #
+    # 要抓住後者只能靠行為：把整串對話推完、回到探索、確認時鐘真的恢復。
+    # 那條路被測試框架擋住了 (理由見下面)，所以**那一哩仍然只有手動測試**。
+    # 不要因為這兩條是綠的就以為那個 bug 已經被自動化守住了。
+    python:
+        _rb.cu_counts_after_rollback = dict(store.world_pause_counts)
+        _rb.cu_depth_after_rollback = store.world_dispatch_depth
+
+    $ _trace("9_量倒帶後的暫停計數")
+
+    $ assert _rb.cu_counts_after_rollback == _rb.cu_counts_in_dialogue, f"倒帶不該改變暫停計數 (改變了就表示 pause/resume 沒有成對地被倒帶)。倒帶前 {_rb.cu_counts_in_dialogue}、倒帶後 {_rb.cu_counts_after_rollback}"
+    $ assert _rb.cu_depth_after_rollback == _rb.cu_depth_in_dialogue, f"倒帶不該改變派發層數 (層數只增不減的話計時器會從此不發動)。倒帶前 {_rb.cu_depth_in_dialogue}、倒帶後 {_rb.cu_depth_after_rollback}"
+
+    # 為什麼這裡不繼續「往前推回探索、確認時鐘真的恢復」：
+    #
+    # 試過，三種方式都走不通，而且全都是測試框架的限制，不是產品問題：
+    #   1. advance until "🗄 抽屜"  -> 那顆按鈕早就在了 (內層對話收尾時
+    #      就 show screen explore，探索畫面一直在框後面)，所以會直接返回、
+    #      完全沒推進對話；而對話還掛著時暫停是對的，斷言就誤報。
+    #   2. 裸 advance              -> 它會「送 dismiss 再等下一句開始」
+    #      (renpy/test/testast.py 的 Advance)，而那是最後一句，
+    #      沒有下一句，所以永遠等不到而逾時。
+    #   3. click pos 點對話框       -> 點不掉。
+    #
+    # 所以「倒帶之後時鐘真的恢復、計時事件真的還會來」這件事，
+    # 目前只有使用者 2026-10-26 的手動測試證明過，沒有自動化。
+    # 這是已知缺口，記在 pending_imp.md 的測試缺口那一節。
