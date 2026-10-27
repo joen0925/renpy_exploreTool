@@ -3382,6 +3382,17 @@ testcase interrupt_flow:
     #
     # 腳步聲（沒標 interrupt）排在 1.5 秒，鬼（標了）排在 4 秒 ——
     # 順序刻意是「先讓不該打斷的那個到點」，這樣第 2 點才驗得到。
+    #
+    # ⚠️ 這裡刻意在**進房之後**才改，而且改完要緊接著 click。
+    #
+    # explore_loop 進房時就照當下的秒數設好鬧鐘睡下去了，所以改秒數本身
+    # 不會讓它醒來 —— 是底下那個 click "🗃 鎖櫃" 打斷了 pause，迴圈
+    # 回來才重算。這正好是這個 testcase 要的：1.5 秒的死線要在
+    # 解謎視窗**開著的時候**過去。
+    #
+    # 進房之前就改的話，腳步聲會在玩家還沒點鎖櫃時就先發生，
+    # 第 2 點就測不到了。（ghost_approach_flow 是相反的情況，那邊
+    # 什麼都不點，所以一定要在進房之前改）
     python:
         for _e in rooms["playground"].events:
             if _e.id == "playground.timer_demo":
@@ -3411,6 +3422,10 @@ testcase interrupt_flow:
         #
         # 拉長的是「演出時間」，不是被測的邏輯。
         JUMPSCARE_DURATION = 4.0
+
+        # 這個 testcase 測的是撲到全螢幕那一種演出，所以明寫。
+        # demo 的預設值會換（兩種演出都做了），不該讓測試跟著飄。
+        PLAYGROUND_GHOST_STYLE = "jumpscare"
 
         _rb.int_hp_before = game_state.actors.get("player", "hp")
 
@@ -3572,3 +3587,78 @@ testcase closeup_interrupt_flow:
     # 被打斷不該算「拿到了照片」—— 玩家根本還沒點它
     $ assert not game_state.inventory.has("torn_photo"), "被打斷不該憑空拿到近景裡的東西"
     $ _trace("5_沒有憑空拿到東西")
+
+
+# 第二種演出：鬼從左邊慢慢走到右邊的主角身上（對話模式）。
+#
+# 這一段完全是普通的 Ren'Py（show / at / with / 對話），沒有用到工具包的
+# 任何新元件。所以這個 testcase 要守的不是「元件有沒有壞」，而是兩件
+# 內容層很容易寫錯、而且錯了會很難看的事：
+#
+#   1. 演完有沒有把立繪收掉 —— 忘記 hide 的話一隻巨大的 👻 會從此
+#      黏在探索畫面上，而且後面每個房間都跟著
+#   2. 血是不是在演出**之後**才扣的
+testcase ghost_approach_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 60.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "前往實驗區(測試區)"
+
+    # 明寫要測哪一種演出，不要靠 demo 的預設值
+    $ PLAYGROUND_GHOST_STYLE = "approach"
+
+    # ⚠️ 秒數一定要在**進房之前**改。
+    #
+    # explore_loop 是進房之後照當下的秒數設一次鬧鐘然後睡下去的
+    # (renpy.pause(還剩幾秒))。進房之後才改成 2 秒的話，它還在睡
+    # 原本那個 20 秒的鬧鐘，根本不會醒來。
+    #
+    # interrupt_flow 那邊是進房之後才改的，能過是因為緊接著
+    # click "🗃 鎖櫃" —— 點熱點會打斷 pause，迴圈回來就重算了。
+    # 這個 testcase 什麼都不點，所以沒有那個運氣。
+    # (第一版就是這樣失敗的：等了 3.5 秒，次數還是 0)
+    python:
+        # 腳步聲殺掉（這個測試只關心鬼），鬼的秒數改短
+        game_state.events.kill("playground.timer_demo")
+
+        for _e in rooms["playground"].events:
+            if _e.id == "playground.ghost_arrives":
+                _e.delay = 2
+
+        _rb.ga_hp_before = game_state.actors.get("player", "hp")
+
+    click "前往實驗區(測試區)"
+    advance until "🗃 鎖櫃"
+    $ _trace("1_到了實驗區")
+
+    # 什麼都不做，站著等鬼走過來。
+    #
+    # 等到演出開始就會**停在第一句對話上**不動（對話要等玩家推進），
+    # 所以這裡不用擔心等太久會錯過 —— 跟嚇人視窗那種會自己關掉的不一樣。
+    pause 3.5
+
+    $ assert game_state.events.count_of("playground.ghost_arrives") == 1, f"等了 3.5 秒鬼應該到了，實際次數 {game_state.events.count_of('playground.ghost_arrives')}"
+    $ assert renpy.showing("pg_player_back"), "演出開始時主角的立繪應該在畫面上"
+    $ assert game_state.actors.get("player", "hp") == _rb.ga_hp_before, f"演出還在跑就不該扣血。現在 {game_state.actors.get('player', 'hp')}"
+    $ _trace("2_演出開始了，立繪在、還沒扣血")
+
+    # 把整段演出推完，回到探索畫面。
+    #
+    # 探索畫面在演出期間是收起來的（run_event_labels 會 hide），
+    # 所以「🗃 鎖櫃」重新出現就代表整串對話真的推完了。
+    advance until "🗃 鎖櫃"
+    $ _trace("3_演出推完回到探索")
+
+    # 第 1 件：立繪一定要收乾淨。
+    $ assert not renpy.showing("pg_ghost"), "演完要把鬼的立繪收掉 (不然它會黏在探索畫面上)"
+    $ assert not renpy.showing("pg_player_back"), "演完要把主角的立繪收掉"
+
+    # 第 2 件：演完才扣血。
+    $ assert game_state.actors.get("player", "hp") == _rb.ga_hp_before - 3, f"演完要扣 3 滴血。之前 {_rb.ga_hp_before}、現在 {game_state.actors.get('player', 'hp')}"
+    $ _trace("4_立繪收乾淨了，血也扣了")
+
+    # 兩種演出共用同一個代價 —— 換演出方式不該改到扣幾滴血。
+    # (扣血寫在分支外面就是為了這件事)
+    $ assert renpy.get_screen("explore") is not None, "演完要回到探索畫面"

@@ -1285,6 +1285,68 @@ label ghost_arrives:
 > **死亡檢查不受影響** —— 它在整串 label 都跑完之後才做（見 `run_event_labels`），
 > 所以扣到 0 一樣會走 `on_player_death`。
 
+### 另一種演出：讓鬼走過來
+
+嚇人視窗是「一瞬間」。想要慢慢加壓的話，**用普通的 Ren'Py 就好** ——
+`show` / `at` / 對話，不需要工具包的任何元件。演出本來就是 Ren'Py 的部門。
+
+```renpy
+image ghost = Text("👻", size=300)
+
+# 站定在某個位置。只有第一次出場用這個
+transform stand(x, z):
+    xalign x
+    yalign 0.98
+    zoom z
+
+# 從「現在的位置」走到 (x, z)，花 t 秒
+transform step(x, z, t=1.0):
+    yalign 0.98
+    linear t xalign x zoom z
+```
+
+```renpy
+label ghost_arrives:
+    show ghost at stand(0.06, 0.30)       # 很遠 → 很小
+    with dissolve
+    "走廊的另一頭站著一個東西。"
+
+    show ghost at step(0.30, 0.50, 1.2)   # 只寫目標，不用寫起點
+    "它往前了一點。"
+
+    show ghost at step(0.78, 1.15, 0.9)
+    "它站到你面前。"
+
+    hide ghost
+    with dissolve
+    return
+```
+
+**只寫目標位置就夠了。** 重新 `show` 一張已經在畫面上的圖時，新的
+transform 會繼承舊的狀態（`renpy/display/scenelists.py` 的
+`transform_state` → `take_state`），所以 `linear` 是從「它現在在哪」
+補間過去的。
+
+附帶好處是**不怕玩家點太快**：上一步的動畫還沒走完就被推進下一句時，
+下一步會從「動畫走到一半的位置」接著走，不會跳。
+
+**走多快其實是玩家的閱讀速度。** 動畫在講話的同時進行，所以每一步配
+一句話，讀完剛好走到。
+
+> ⚠️ **演完一定要 `hide`。**
+>
+> 立繪畫在 master layer 上，跟房間背景同一層。`run_event_labels` 收尾時
+> 只會換畫面（`hide room_background` / `show explore`），**不會幫你收立繪**
+> ——忘記的話一隻巨大的 👻 會從此黏在探索畫面上，而且後面每個房間都跟著。
+
+兩種演出的取捨：
+
+| | 走過來 | 嚇人視窗 |
+|---|---|---|
+| 能不能配台詞 | 可以，而且能慢慢加壓 | 不行，就一張圖 |
+| 玩家能不能跳過 | **能**（點擊會推進對話） | 不能（沒有關閉鈕也不吃點擊） |
+| 長度由誰決定 | 玩家的閱讀速度 | 設計者 |
+
 > **多個事件同時到點時只會放最重要的那一個**（`sequence` 最小）。
 > 所以如果腳步聲（`sequence=0`）和鬼（`sequence=10`）同時到點，
 > 玩家會先看完腳步聲，鬼要等下一輪。排事件順序時要記得這件事。

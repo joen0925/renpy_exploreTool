@@ -12,12 +12,60 @@
 #   完整說明見 game/libs/explore/DEVELOPER_GUIDE.md
 ##################################################
 
+# 20 秒那個事件 (playground.ghost_arrives) 要用哪一種演出。
+#
+#   "approach"   對話模式：鬼從左邊慢慢走到右邊的主角身上（普通的 Ren'Py）
+#   "jumpscare"  小鬼撲到全螢幕、視窗自己關掉（通用元件 show_jumpscare）
+#
+# 兩種都做好了，改這一行就能換。扣的 3 滴血兩邊共用，不會跟著改。
+#
+# 兩者的差別不只是外觀：
+#   approach   能配台詞、能慢慢加壓，但玩家可以用點擊加速跳過
+#   jumpscare  長度由設計者決定、點擊也跳不掉，但沒有鋪陳的空間
+define PLAYGROUND_GHOST_STYLE = "approach"
+
 # 嚇人視窗用的「小鬼」。
 #
 # 沒有美術素材，所以用一個放大的 emoji —— Text(...) 本身就是一張合法的圖。
 # 有素材之後把這一行換成 image playground_ghost_face = "images/ghost.png" 就好，
 # label 那邊一個字都不用改 (show_jumpscare 收的是圖片名稱)。
 image playground_ghost_face = Text("👻", size=420, color="#e8eaed")
+
+
+##################################################
+# 第二種演出：對話模式，鬼從左邊慢慢走到右邊的主角身上
+##################################################
+
+# 走近用的立繪。一樣用 emoji 代替素材。
+#
+# 這兩張是「站在場景裡的人」，跟上面那張撲到全螢幕的臉不同用途，
+# 所以尺寸基準小很多 —— 實際大小由下面的 zoom 決定。
+image pg_ghost = Text("👻", size=300, color="#cdd6e0")
+image pg_player_back = Text("🧍", size=300, color="#e8eaed")
+
+
+# 站定在某個位置。只有「第一次出場」用這個。
+#
+# x 是 xalign (0 = 最左, 1 = 最右)，z 是 zoom (越大 = 越近)。
+# yalign 固定貼著地面附近，走近的時候不該上下飄。
+transform pg_stand(x, z):
+    xalign x
+    yalign 0.98
+    zoom z
+
+
+# 從「現在的位置」走到 (x, z)，花 t 秒。
+#
+# 為什麼只寫目標、不用寫起點：Ren'Py 重新 show 一張已經在畫面上的圖時，
+# 新的 transform 會繼承舊 transform 的狀態
+# (renpy/display/scenelists.py 的 transform_state -> take_state)。
+# 所以 linear 是從「它現在在哪」補間過去的。
+#
+# 附帶好處是**不怕玩家點太快**：上一步的動畫還沒走完就被推進下一句時，
+# 下一步會從「動畫走到一半的位置」接著走，不會跳。
+transform pg_step(x, z, t=1.0):
+    yalign 0.98
+    linear t xalign x zoom z
 
 
 init python:
@@ -228,24 +276,97 @@ label playground_drawer_lining:
 
 
 label playground_ghost_arrives:
-    # 先嚇，後扣血。
+    # 兩種演出都做了，改這一行就能換 (見檔案最上面的 PLAYGROUND_GHOST_STYLE)
+    if PLAYGROUND_GHOST_STYLE == "approach":
+        call playground_ghost_approach from _call_pg_ghost_approach
+    else:
+        call playground_ghost_jumpscare from _call_pg_ghost_jumpscare
+
+    # 演完才扣血。
     #
     # 為什麼扣血寫在這裡、而不是寫在那個 Event 的 Effect 上：
     #
     # 引擎的順序是「先套用 Effect，再跑它帶的 label」(見 collect_events)。
-    # 所以血如果掛在 Effect 上，左上角的 ❤️ 會在圖跳出來**之前**就少掉 ——
+    # 所以血如果掛在 Effect 上，左上角的 ❤️ 會在演出**之前**就少掉 ——
     # 玩家先看到自己掉血，才看到為什麼。
     #
-    # 搬到 label 裡之後順序就對了：圖跳出來 → 自己關掉 → 才扣血。
+    # 搬到這裡之後順序就對了：演完 → 才扣血。
     # 死亡檢查不受影響，它在整串 label 都跑完之後才做
     # (見 run_event_labels)，所以扣到 0 一樣會走 on_player_death。
-    call show_jumpscare("playground_ghost_face") from _call_playground_ghost_scare
-
+    #
+    # 放在分支外面是刻意的 —— 兩種演出共用同一個代價，
+    # 換演出方式不會不小心改到扣幾滴血。
     $ Effect(actor="player", stats={"hp": -3}).apply(game_state)
 
+    # 收尾的台詞一律排在扣血**之後**。
+    #
+    # 兩種演出的子 label 都刻意不講收尾的話 —— 中間插一句要等玩家推進的
+    # 台詞，就等於把「演完馬上扣血」變成「演完、等玩家按一下、才扣血」。
+    # (寫這一版時真的插進去了，測試抓到：視窗關了但血還是 5)
     "牠從你身上穿過去了。"
-    "（這是 interrupt=True 的計時事件：如果你剛剛正在解鎖櫃或翻抽屜，"
-    "視窗會被它當場關掉。扣的 3 滴血是在視窗關掉之後才扣的。）"
+    "（扣了 3 滴血。這是 interrupt=True 的計時事件：如果你剛剛正在解鎖櫃"
+    "或翻抽屜，視窗會被它當場關掉，而血是在演出結束之後才扣的。）"
+    return
+
+
+# 演出 A：小鬼撲到全螢幕，視窗自己關掉。
+#
+# 刻意不講任何話 —— 收尾的台詞在上面那個 label，排在扣血之後。
+label playground_ghost_jumpscare:
+    call show_jumpscare("playground_ghost_face") from _call_playground_ghost_scare
+    return
+
+
+# 演出 B：對話模式，鬼從左邊慢慢走到右邊的主角身上。
+#
+# 這一段**完全是普通的 Ren'Py**：show / at / with / 對話。
+# 沒有用到工具包的任何新元件 —— 因為「演出」本來就是 Ren'Py 的部門
+# (見 effect.rpy 開頭：劇情走 label，不要再實作一套流程控制)。
+# 想在別的房間做同樣的事，照抄這個 label 改台詞與位置就好。
+#
+# ⚠️ 最後一定要 hide。
+#    這些立繪畫在 master layer 上，跟房間背景同一層。run_event_labels
+#    收尾時只會換畫面 (hide room_background / show explore)，**不會**
+#    幫你收立繪 —— 忘記 hide 的話，一隻巨大的 👻 會從此黏在探索畫面上。
+label playground_ghost_approach:
+
+    # 主角站在右邊。
+    #
+    # 想改成第一人稱 (沒有主角立繪、鬼直接朝鏡頭走來)，
+    # 把這兩行跟最後那行 hide 刪掉就好，其他完全不用動。
+    show pg_player_back at pg_stand(0.86, 0.85)
+    with dissolve
+
+    "背後有腳步聲。你回過頭。"
+
+    # 第一步：很遠，所以很小。第一次出場用 pg_stand 定位。
+    show pg_ghost at pg_stand(0.06, 0.30)
+    with dissolve
+
+    "走廊的另一頭站著一個東西。"
+
+    # 之後每一步只寫目標位置，補間自動從現在的位置開始 (見 pg_step)。
+    #
+    # 每一步都配一句話，所以「走多快」其實是玩家自己的閱讀速度 ——
+    # 動畫在講話的同時進行，讀完這句它剛好走到。
+    show pg_ghost at pg_step(0.30, 0.50, 1.2)
+    "它往前了一點。你聽見自己的呼吸聲變大。"
+
+    show pg_ghost at pg_step(0.55, 0.75, 1.1)
+    "近到看得出它沒有臉。"
+
+    show pg_ghost at pg_step(0.78, 1.15, 0.9)
+    "它站到你面前。"
+
+    # 最後一步刻意又快又大 ——
+    # 前面慢慢靠近就是為了讓這一下的加速有對比。
+    show pg_ghost at pg_step(0.86, 2.0, 0.22)
+    "——"
+
+    hide pg_ghost
+    hide pg_player_back
+    with dissolve
+
     return
 
 
