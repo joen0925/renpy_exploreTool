@@ -73,6 +73,35 @@ init python:
             on_failure=Effect(label="playground_phone_wrong"),
         )
 
+        # playground 的鎖櫃：pausable=False 的示範。
+        #
+        # 上面兩個關卡都是預設的 pausable=True —— 世界會停下來等玩家，
+        # 想解多久都沒關係。這一個相反：解的時候鬼照樣逼近，
+        # 而且標了 interrupt=True 的計時事件到點時會把視窗直接關掉。
+        #
+        # 怎麼試：進實驗區之後**先去點鎖櫃**，然後什麼都不要按。
+        # 10 秒時會有腳步聲（那個事件沒標 interrupt，所以乖乖排隊，
+        # 視窗不會動），20 秒時鬼會到 —— 視窗當場關掉。
+        #
+        # 被關掉**不算答錯**（run_puzzle 收到 PUZZLE_INTERRUPTED 時
+        # 不套用任何 Effect），所以不會扣血。代價由那個計時事件自己收。
+        puzzles["playground_locker"] = KeypadPuzzle(
+            code="1958",
+            title="鎖櫃",
+            hint="四位數。鎖環上有人用指甲刻了「別在這裡待太久」。",
+
+            pausable=False,
+
+            on_success=Effect(
+                set_flags=["playground_locker_opened"],
+                label="playground_locker_opens",
+            ),
+
+            # 答錯只講一句話、不扣血 —— 這個關卡的壓力來自時間，
+            # 不是來自答錯的代價。兩種壓力都加在同一個關卡上會太兇。
+            on_failure=Effect(label="playground_locker_wrong"),
+        )
+
         return puzzles
 
 

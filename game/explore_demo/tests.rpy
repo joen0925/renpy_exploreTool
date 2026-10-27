@@ -1538,6 +1538,17 @@ testcase keypad_flow:
     $ assert renpy.get_screen("keypad_puzzle") is not None, "點保險箱應該叫出密碼鎖"
     $ _trace("2_密碼鎖開啟")
 
+    # pausable 的「會暫停」那一半。
+    #
+    # 保險箱是預設的 pausable=True，所以解的時候世界應該停下來等玩家 ——
+    # 單純的謎題，想多久都沒關係。
+    #
+    # 這條跟 interrupt_flow 裡「pausable=False 不該暫停」是一對。
+    # 只有那一條的話，run_puzzle 完全無視 pausable、永遠讓時鐘跑，
+    # 也不會有任何測試叫 —— 鬼就會在玩家慢慢解謎時默默逼近。
+    $ assert world.paused, "pausable=True 的關卡開著時世界應該暫停 (想解多久都沒關係)"
+    $ assert "dialogue" in world.pause_reasons, f"暫停理由應該是外層對話那一層，實際 {world.pause_reasons}"
+
     # 數字鍵有沒有真的接上 SetScreenVariable
     $ assert renpy.get_screen_variable("entered", screen="keypad_puzzle") == ""
     click "7"
@@ -3226,3 +3237,338 @@ testcase closeup_flow:
     # 所以「倒帶之後時鐘真的恢復、計時事件真的還會來」這件事，
     # 目前只有使用者 2026-10-26 的手動測試證明過，沒有自動化。
     # 這是已知缺口，記在 pending_imp.md 的測試缺口那一節。
+
+
+# 「鬼到了就把視窗關掉」的純邏輯。
+#
+# 核心是 pending_interrupt()：它是只讀查詢，視窗畫面每 0.2 秒問一次。
+# 所以這裡餵假的事件與假的秒數就能驗完，不用真的等鬼來。
+testcase interrupt_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- Event.interrupt 的寫法驗證 ---
+    python:
+        def _int_raises(**kw):
+            try:
+                Event(id="i.bad", **kw)
+            except ValueError:
+                return True
+            return False
+
+    # 只有計時事件能標。進房／點擊事件是玩家自己的動作引發的，
+    # 沒有「打斷」可言 —— 標了完全不會有效果，而那種錯誤看不出來。
+    $ assert _int_raises(interrupt=True), "沒寫 trigger 卻標 interrupt=True 要報錯"
+    $ assert _int_raises(trigger=TriggerType.ENTER_ROOM, interrupt=True), "進房事件標 interrupt=True 要報錯"
+    $ assert _int_raises(trigger=TriggerType.CLICK_HOTSPOT, interrupt=True), "點擊事件標 interrupt=True 要報錯"
+    $ assert _int_raises(trigger=TriggerType.TIMER, delay=5, interrupt="yes"), "interrupt 只能是 True/False"
+    $ assert _int_raises(trigger=TriggerType.TIMER, delay=5, interrupt=1), "1 不是 bool，要報錯"
+
+    # 寫對的要能建起來，而且預設是 False
+    $ assert Event(id="i.ok", trigger=TriggerType.TIMER, delay=5, interrupt=True).interrupt is True, "標了就該是 True"
+    $ assert Event(id="i.plain", trigger=TriggerType.TIMER, delay=5).interrupt is False, "沒標就該是 False"
+    $ assert Event(id="i.enter").interrupt is False, "進房事件沒標也該是 False (只是不能標 True)"
+
+    # --- pending_interrupt ---
+    python:
+        store._pi_gs = GameState()
+        store._pi_room = Room(name="pi_room", background=None, bg_width=1920)
+        store._pi_ctx = EventContext(store._pi_gs, store._pi_room)
+
+        store._pi_marked = Event(
+            id="pi.ghost", trigger=TriggerType.TIMER, delay=10, interrupt=True,
+        )
+        store._pi_plain = Event(
+            id="pi.steps", trigger=TriggerType.TIMER, delay=10,
+        )
+        store._pi_gated = Event(
+            id="pi.gated", trigger=TriggerType.TIMER, delay=10, interrupt=True,
+            condition=Condition(require=["flashlight"]),
+        )
+
+    # 沒有事件 / 沒有標記的事件 -> 不打斷
+    $ assert pending_interrupt(None, 999, store._pi_ctx) is None, "沒有事件不該打斷"
+    $ assert pending_interrupt([], 999, store._pi_ctx) is None, "空清單不該打斷"
+    $ assert pending_interrupt([store._pi_plain], 999, store._pi_ctx) is None, "沒標 interrupt 的事件要乖乖排隊，不該打斷視窗"
+
+    # 標了但時間還沒到 -> 不打斷
+    $ assert pending_interrupt([store._pi_marked], 9.9, store._pi_ctx) is None, "時間還沒到不該打斷"
+
+    # 標了而且到點 -> 回傳那個事件
+    $ assert pending_interrupt([store._pi_marked], 10, store._pi_ctx) is store._pi_marked, "到點就該回傳那個事件"
+    $ assert pending_interrupt([store._pi_marked], 999, store._pi_ctx) is store._pi_marked, "過期更要打斷"
+
+    # 已經觸發過而死掉 -> 不打斷。
+    # 不排除的話，鬼放完之後這個房間的視窗會永遠一開就被關掉。
+    python:
+        store._pi_gs_dead = GameState()
+        store._pi_gs_dead.events.record_trigger("pi.ghost", 1)
+        store._pi_ctx_dead = EventContext(store._pi_gs_dead, store._pi_room)
+
+    $ assert store._pi_gs_dead.events.is_dead("pi.ghost"), "這個測試的前提是事件已經死了"
+    $ assert pending_interrupt([store._pi_marked], 999, store._pi_ctx_dead) is None, "死掉的事件不該再打斷視窗"
+
+    # 條件不成立 -> 不打斷。
+    #
+    # 這條很重要：「視窗關掉了、結果什麼都沒發生」比「視窗沒關」糟得多，
+    # 玩家會覺得視窗莫名其妙自己關掉。所以條件也要先算過。
+    $ assert pending_interrupt([store._pi_gated], 999, store._pi_ctx) is None, "條件不成立時不該打斷 (不然視窗關了卻什麼都沒發生)"
+
+    $ store._pi_gs.inventory.add("flashlight")
+    $ assert pending_interrupt([store._pi_gated], 999, store._pi_ctx) is store._pi_gated, "條件成立之後就該打斷"
+
+    # 好幾個都到點 -> 回傳 sequence 最小的 (最重要的那個)
+    python:
+        store._pi_early = Event(
+            id="pi.early", trigger=TriggerType.TIMER, delay=10,
+            interrupt=True, sequence=-5,
+        )
+        store._pi_late = Event(
+            id="pi.late", trigger=TriggerType.TIMER, delay=10,
+            interrupt=True, sequence=5,
+        )
+        store._pi_picked = pending_interrupt(
+            [store._pi_late, store._pi_early], 999, store._pi_ctx,
+        )
+
+    $ assert store._pi_picked is store._pi_early, f"同時到點要挑 sequence 最小的，實際 {store._pi_picked}"
+
+    # --- 被打斷不算答錯 ---
+    #
+    # PUZZLE_INTERRUPTED 走的是「認不得的值一律不套用 Effect」那條路，
+    # 所以 puzzle_result_effect 不用為它改一行。這條守住那件事。
+    python:
+        store._pi_puzzle = KeypadPuzzle(
+            code="1234",
+            on_success=Effect(set_flags=["pi_ok"]),
+            on_failure=Effect(actor="player", stats={"hp": -1}),
+        )
+
+    $ assert puzzle_result_effect(store._pi_puzzle, PUZZLE_INTERRUPTED) is None, "被鬼打斷不該套用任何 Effect (不是答錯，不該扣血)"
+    $ assert puzzle_result_effect(store._pi_puzzle, PUZZLE_CLOSED) is None, "玩家自己關掉也不套用"
+    $ assert puzzle_result_effect(store._pi_puzzle, PUZZLE_FAILED) is store._pi_puzzle.on_failure, "真的答錯才套用 on_failure"
+
+    # --- pausable 這個欄位本身 ---
+    $ assert KeypadPuzzle(code="1", on_success=Effect(label="x")).pausable is True, "pausable 預設要是 True (世界停下來等玩家)"
+    $ assert KeypadPuzzle(code="1", on_success=Effect(label="x"), pausable=False).pausable is False, "填了 False 就要是 False"
+    $ assert puzzle_def("playground_locker").pausable is False, "實驗區的鎖櫃是 pausable=False 的示範"
+    $ assert puzzle_def("kitchen_safe").pausable is True, "廚房保險箱維持預設的會暫停"
+
+
+# 真的讓鬼來把解謎視窗關掉，走一遍完整流程。
+#
+# 守住四件事：
+#   1. pausable=False 的關卡開著時，世界時鐘**在走**
+#   2. 沒標 interrupt 的計時事件到點時**不會**關掉視窗（乖乖排隊）
+#   3. 標了 interrupt 的事件到點時視窗**當場關掉**
+#   4. 被關掉**不算答錯** —— 不扣血，而那個事件確實發生了
+testcase interrupt_flow:
+
+    # 要真的等時間過去，所以預算開大一點。
+    $ __import__("renpy").test.testsettings._test.timeout = 90.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "前往實驗區(測試區)"
+    click "前往實驗區(測試區)"
+    advance until "🗃 鎖櫃"
+    $ _trace("1_到了實驗區")
+
+    # 把 demo 的秒數改短，不然這個測試要等 20 秒。
+    #
+    # 改的是靜態定義（Room 的 Event），跟 rollback_through_modals 改
+    # puzzle_def 的 on_failure 是同一種做法。這個行程結束就沒了，
+    # 而且「重新載入房間資料」會重建，不會污染其他測試。
+    #
+    # 腳步聲（沒標 interrupt）排在 1.5 秒，鬼（標了）排在 4 秒 ——
+    # 順序刻意是「先讓不該打斷的那個到點」，這樣第 2 點才驗得到。
+    python:
+        for _e in rooms["playground"].events:
+            if _e.id == "playground.timer_demo":
+                _e.delay = 1.5
+            elif _e.id == "playground.ghost_arrives":
+                _e.delay = 4
+
+        # 暫時讓答錯會扣血。
+        #
+        # 鎖櫃原本答錯不扣血（壓力來自時間），但那會讓底下那條
+        # 「被打斷不該扣血」變成空話 —— 不管有沒有被當成答錯，
+        # 血都不會變。換成會扣血的版本，這條斷言才真的在守東西。
+        # （做破壞驗證時發現的：把 PUZZLE_INTERRUPTED 當成答錯，
+        #   原本只有純函式測試會叫，這個流程測試不會）
+        puzzle_def("playground_locker").on_failure = Effect(
+            actor="player",
+            stats={"hp": -1},
+            label="playground_locker_wrong",
+        )
+
+        # 把嚇人視窗拉長到 4 秒。
+        #
+        # 預設是 1.2 秒，而「鬼被派發」與「圖還在畫面上」之間的空檔
+        # 只有 0.2 秒左右（explore_loop 設鬧鐘的下限）——
+        # 用預設長度的話，測試要在 1.2 秒的窗口裡剛好量到，看運氣。
+        # (第一次就是這樣失敗的：事件派發了，但圖已經演完關掉了)
+        #
+        # 拉長的是「演出時間」，不是被測的邏輯。
+        JUMPSCARE_DURATION = 4.0
+
+        _rb.int_hp_before = game_state.actors.get("player", "hp")
+
+    click "🗃 鎖櫃"
+    pause 0.5
+
+    $ assert renpy.get_screen("keypad_puzzle") is not None, "點鎖櫃應該打開密碼鎖"
+    $ _trace("2_密碼鎖打開了")
+
+    # 第 1 點：pausable=False -> 世界時鐘在走。
+    #
+    # 關卡是從熱點的 label 叫出來的，而那些 label 由 run_event_labels
+    # 執行，那裡為了對話已經把時鐘暫停了 —— 所以這裡會是「沒暫停」
+    # 唯一的理由就是 run_puzzle 看到 pausable=False 而主動讓開。
+    $ assert not world.paused, f"pausable=False 的關卡開著時時鐘不該暫停，實際暫停理由 {world.pause_reasons}"
+
+    python:
+        _rb.int_elapsed_at_open = world.elapsed
+
+    # 等到「腳步聲」那個事件該到點了（1.5 秒），但它沒標 interrupt。
+    pause 2.5
+
+    # 第 2 點：沒標 interrupt 的事件不該關掉視窗。
+    #
+    # 這條是整個設計的重點 —— 氣氛台詞不該把玩家從密碼鎖裡拽出來，
+    # 還害他按到一半的號碼全沒了。
+    $ assert renpy.get_screen("keypad_puzzle") is not None, "沒標 interrupt 的計時事件到點時不該關掉視窗 (它該乖乖排隊)"
+    $ assert world.elapsed > _rb.int_elapsed_at_open, f"解謎期間時鐘要繼續走，開窗時 {_rb.int_elapsed_at_open}、現在 {world.elapsed}"
+    $ _trace("3_腳步聲到點但視窗還開著")
+
+    # 再等到鬼到點（4 秒）。
+    pause 2.5
+
+    # 第 3 點：標了 interrupt 的事件要把視窗當場關掉。
+    $ assert renpy.get_screen("keypad_puzzle") is None, "標了 interrupt 的事件到點時應該把視窗關掉"
+    $ _trace("4_鬼到了，視窗被關掉")
+
+    # 被打斷不算答錯 —— 量在「視窗剛關掉」這一刻。
+    #
+    # 不能等到最後才量：鬼的事件自己會扣 3 滴血，那是它應得的代價，
+    # 跟「被打斷算不算答錯」是兩回事。混在一起量就分不出來了。
+    python:
+        _rb.int_hp_at_close = game_state.actors.get("player", "hp")
+
+    $ assert _rb.int_hp_at_close == _rb.int_hp_before, f"被鬼打斷不是答錯，視窗關掉的當下不該扣血。之前 {_rb.int_hp_before}、現在 {_rb.int_hp_at_close}"
+    $ assert not game_state.flags.has("playground_locker_opened"), "被打斷更不該算答對"
+
+    # 視窗關掉之後執行權回到 explore_loop，它下一圈開始派發到點的事件。
+    #
+    # ⚠️ 第一個被派發的是**腳步聲**，不是鬼 —— 兩個都到點了，而
+    # due_timer_events 按 sequence 排序 (腳步聲 0、鬼 10)，
+    # collect_events 又是 max_fires=1，所以這一圈只放腳步聲。
+    # 鬼要等腳步聲的對話演完、下一圈才輪到它。
+    #
+    # (這裡原本寫成「關窗後鬼馬上發生」，跑出來次數是 0 才發現 ——
+    #  程式是對的，是我沒照著排序算一遍)
+    pause 1.5
+
+    # 腳步聲確實排隊排到了，沒有因為視窗擋著就消失。
+    $ assert game_state.events.count_of("playground.timer_demo") == 1, f"沒標 interrupt 的事件應該在視窗關掉後排隊發生，實際次數 {game_state.events.count_of('playground.timer_demo')}"
+    $ _trace("5_腳步聲排隊到了")
+
+    # 推完腳步聲的對話，explore 回來之後才輪到鬼。
+    advance until "🗃 鎖櫃"
+
+    # 0.6 秒足夠讓 explore_loop 派發 (下限 0.2 秒)，
+    # 而嚇人視窗被拉長到 4 秒，所以這時候圖一定還在。
+    pause 0.6
+
+    # 第 4 點：事件真的發生了。
+    #
+    # 次數是 collect_events 在跑對話之前就記的，所以不管鬼的台詞
+    # 有沒有被推完，這條都成立。
+    $ assert game_state.events.count_of("playground.ghost_arrives") == 1, f"視窗關掉之後那個事件應該真的發生，實際次數 {game_state.events.count_of('playground.ghost_arrives')}"
+    $ _trace("6_鬼的事件被派發了")
+
+    # --- 第 5 點：嚇人視窗跳出來，自己關掉，然後才扣血 ---
+    #
+    # 順序是重點。扣血刻意寫在 label 裡而不是 Event 的 Effect 上，
+    # 因為引擎是「先套用 Effect、再跑它帶的 label」—— 掛在 Effect 上
+    # 的話左上角的 ❤️ 會在圖跳出來**之前**就少掉，玩家先看到自己掉血、
+    # 才看到為什麼。
+    $ assert renpy.get_screen("jumpscare") is not None, "鬼的事件應該跳出嚇人視窗"
+    $ assert game_state.actors.get("player", "hp") == _rb.int_hp_before, f"圖還在的時候就不該扣血 (那樣玩家會先看到掉血才看到原因)。現在 {game_state.actors.get('player', 'hp')}"
+    $ _trace("7_嚇人視窗跳出來了，還沒扣血")
+
+    # 等它自己關掉。刻意沒有關閉鈕也不吃點擊，所以只能等。
+    pause 4.5
+
+    $ assert renpy.get_screen("jumpscare") is None, "嚇人視窗應該自己關掉 (timer 到就 Return)"
+    $ assert game_state.actors.get("player", "hp") == _rb.int_hp_before - 3, f"視窗關掉之後才扣 3 滴血。之前 {_rb.int_hp_before}、現在 {game_state.actors.get('player', 'hp')}"
+    $ _trace("8_視窗自己關掉，扣了 3 滴血")
+
+
+# 近景視窗被鬼打斷。
+#
+# 近景沒有 pausable 這種選項 —— 它永遠是「時鐘在走」的，所以永遠
+# 可以被打斷。翻抽屜本來就不該是安全的。
+#
+# 最重要的一條是「被打斷之後**不可以**再把框打開」：
+# open_closeup 是一個 while 迴圈，正常情況下跑完事件就會把框放回來。
+# 被鬼打斷時那個行為必須停掉，不然玩家會被關在抽屜裡出不來。
+testcase closeup_interrupt_flow:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 90.0
+    $ _trace_reset()
+
+    click "開始"
+    advance until "前往實驗區(測試區)"
+    click "前往實驗區(測試區)"
+    advance until "🗄 抽屜"
+    $ _trace("1_到了實驗區")
+
+    # 腳步聲殺掉（這個測試只關心會打斷的那個），鬼的秒數改短。
+    python:
+        game_state.events.kill("playground.timer_demo")
+
+        for _e in rooms["playground"].events:
+            if _e.id == "playground.ghost_arrives":
+                _e.delay = 3
+
+    click "🗄 抽屜"
+    advance until "🖼 撕成兩半的照片"
+
+    $ assert renpy.get_screen("closeup") is not None, "點抽屜應該打開近景視窗"
+    $ assert not world.paused, f"近景期間時鐘不該暫停，實際 {world.pause_reasons}"
+    $ _trace("2_框打開了，時鐘在走")
+
+    # 什麼都不要點，等鬼來。
+    pause 4.0
+
+    $ assert renpy.get_screen("closeup") is None, "鬼到了應該把近景視窗關掉"
+    $ _trace("3_鬼到了，框被關掉")
+
+    # 關鍵：框**不可以**再打開。
+    #
+    # 正常的近景迴圈是「跑完事件就把框放回來」，被打斷時那條路必須停掉。
+    # 等得比事件派發的時間長一點再看，確定它不是晚一點才跳出來。
+    pause 2.0
+
+    $ assert renpy.get_screen("closeup") is None, "被鬼打斷之後絕對不可以再把框打開 (不然玩家被關在抽屜裡出不來)"
+    $ _trace("4_框沒有再打開")
+
+    # 這裡**不**斷言「那個事件已經發生」。
+    #
+    # 框關掉之後 playground_open_drawer 還有一句「你把抽屜推回去。」
+    # 在等玩家，而對話期間時鐘是暫停的、explore_loop 也還沒跑到 ——
+    # 所以事件要等玩家讀完那句話才會出場。這是對的行為。
+    # （我原本寫了 count == 1，跑出來是 0 才發現；程式沒錯，是我沒算到
+    #   demo 的收尾台詞還卡在前面）
+    #
+    # 而那句話沒辦法在測試裡推掉（理由見 closeup_flow 裡的那段說明：
+    # advance until 會短路、裸 advance 會等一句不存在的下一句）。
+    # 「被打斷之後事件確實會派發」由 interrupt_flow 守著 ——
+    # 那個關卡的 label 在 run_puzzle 之後沒有收尾台詞，所以直接回到
+    # explore_loop。這個 testcase 的獨特價值是上面那兩條「框關掉、
+    # 而且沒有再打開」。
+
+    # 被打斷不該算「拿到了照片」—— 玩家根本還沒點它
+    $ assert not game_state.inventory.has("torn_photo"), "被打斷不該憑空拿到近景裡的東西"
+    $ _trace("5_沒有憑空拿到東西")

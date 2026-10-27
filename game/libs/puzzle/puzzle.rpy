@@ -79,6 +79,16 @@ init python:
     PUZZLE_FAILED = "failed"
     PUZZLE_CLOSED = "closed"
 
+    # 鬼到了，視窗被強制關掉。只有 pausable=False 的關卡會收到這個。
+    #
+    # 跟 PUZZLE_CLOSED 一樣「什麼都不做、不算失敗」——
+    # 玩家不是放棄，是被打斷的，不該為此付代價
+    # (代價由那個計時事件自己收，它馬上就會出場)。
+    #
+    # 分成兩個值而不是共用 PUZZLE_CLOSED，是因為呼叫端可能要分辨：
+    # 近景視窗被打斷時**不可以**再把框打開 (見 open_closeup)。
+    PUZZLE_INTERRUPTED = "interrupted"
+
     def puzzle_def(key):
         """
         從解謎目錄查一個關卡的定義。查不到回傳 None。
@@ -103,9 +113,12 @@ init python:
         if result == PUZZLE_FAILED:
             return puzzle.on_failure
 
-        # PUZZLE_CLOSED (關掉視窗)，或任何預期外的值，都不套用任何 Effect。
+        # PUZZLE_CLOSED (玩家關掉)、PUZZLE_INTERRUPTED (鬼到了被強制關掉)，
+        # 或任何預期外的值，都不套用任何 Effect。
+        #
         # 預期外的值也走這條路是刻意的：新的關卡類型如果不小心寫了
         # Return()，收到的會是 True —— 那時候「什麼都不做」比「當成答對」安全。
+        # (也因為這個保險，新增 PUZZLE_INTERRUPTED 不用改這個函式)
         return None
 
 
@@ -141,19 +154,34 @@ label run_puzzle(puzzle_key):
     # 而結果套用的 Effect (例如答錯扣的血) 也會一起被倒帶還原。
     $ renpy.suspend_rollback(True)
 
-    # 解謎期間世界時鐘要繼續走 —— 玩家在解鎖的時候鬼照樣逼近。
+    # pausable 決定解謎期間世界要不要停下來等玩家。
     #
-    # 需要 suspend 是因為關卡是從熱點的 label 叫出來的，而那些 label
-    # 由 run_event_labels 執行，那裡為了對話已經把時鐘暫停了。
-    # 不讓開的話解謎全程都是暫停的 (這個 bug 真的發生過，手動測試抓到的)。
+    #   pausable=True  (預設)  世界暫停。單純的謎題，想多久都沒關係。
+    #   pausable=False          世界繼續走，鬼照樣逼近 ——
+    #                           到點的話視窗會被強制關掉 (見下面的守望畫面)。
     #
-    # 之後接 Puzzle.pausable 時，這裡改成只有 pausable=False 才讓開。
-    $ world.suspend_pauses()
+    # 為什麼 pausable=False 要「suspend」而不是什麼都不做：
+    # 關卡是從熱點的 label 叫出來的，而那些 label 由 run_event_labels
+    # 執行，那裡為了對話已經把時鐘暫停了。不主動讓開的話，解謎全程
+    # 都會是暫停的 —— 不管 pausable 填什麼。
+    # (這個 bug 真的發生過，2026-10-22 手動測試抓到的)
+    if not _puzzle.pausable:
+        $ world.suspend_pauses()
 
-    # 玩家在這裡操作，直到 screen 執行 Return(...)
+        # 鬼到了就把視窗關掉。
+        #
+        # 掛在這裡而不是寫進每個關卡畫面裡：run_puzzle 的契約是
+        # 「只認四個屬性」，新的關卡類型不該還要記得掛這個 timer ——
+        # 忘記掛的人會做出一個鬼抓不到玩家的關卡，而試玩不會發現。
+        show screen world_interrupt_watch(PUZZLE_INTERRUPTED)
+
+    # 玩家在這裡操作，直到 screen 執行 Return(...)，
+    # 或是守望畫面判定鬼到了而把互動結束掉。
     $ _puzzle_result = renpy.call_screen(_puzzle.screen, puzzle=_puzzle)
 
-    $ world.restore_pauses()
+    if not _puzzle.pausable:
+        hide screen world_interrupt_watch
+        $ world.restore_pauses()
 
     $ renpy.suspend_rollback(False)
 

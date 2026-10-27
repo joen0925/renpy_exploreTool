@@ -51,6 +51,24 @@ init python:
             # 從「進這個房間的那一刻」開始算，換房間會重新計時
             # (使用者 2026-10-20 的決定：換房間本來就是躲鬼的手段)。
             delay=None,
+
+            # 到點時可不可以「打斷玩家手上的事」。只有 TIMER 事件能填。
+            #
+            # 預設 False = 乖乖排隊。玩家正在解謎或翻抽屜的時候，
+            # 到點的事件會等他自己關掉視窗才發生 —— 這是原本的行為。
+            #
+            # True = 立刻把視窗關掉，讓事件馬上出場。
+            # 這是給「鬼抓到人」用的：不打斷的話玩家躲在解謎視窗裡
+            # 就永遠安全，pausable=False 等於沒有意義。
+            #
+            # 為什麼要設計者明確標記、而不是所有計時事件都打斷：
+            # 氣氛用的台詞 (遠處的腳步聲) 不該把玩家從密碼鎖裡拽出來，
+            # 還害他按到一半的號碼全沒了。「被打斷」要稀有才有意義。
+            #
+            # ⚠️ 不要跟 chance 一起用。中斷的判定是只讀的，不會骰骰子；
+            # 所以骰輸的話視窗已經關了、事件卻沒發生 —— 玩家會覺得
+            # 視窗莫名其妙自己關掉。要機率性的鬼，請讓它排隊 (不要標 interrupt)。
+            interrupt=False,
         ):
             self.id = id
             self.condition = condition
@@ -61,6 +79,7 @@ init python:
             self.trigger = trigger
             self.chance = self._validate_chance(chance)
             self.delay = self._validate_delay(delay, trigger, limit)
+            self.interrupt = self._validate_interrupt(interrupt, trigger)
 
         @staticmethod
         def _validate_chance(chance):
@@ -148,6 +167,28 @@ init python:
                 )
 
             return delay
+
+        @staticmethod
+        def _validate_interrupt(interrupt, trigger):
+            """
+            只有 TIMER 事件能標 interrupt，而且必須是 True / False。
+
+            為什麼要擋：進房事件、點擊事件本來就是玩家自己的動作引發的，
+            沒有「打斷」這回事 —— 標了也完全不會有任何效果，
+            而「標了卻沒反應」是那種看不出來的錯誤。
+            """
+            if not isinstance(interrupt, bool):
+                raise ValueError(
+                    f"Event 的 interrupt 只能填 True 或 False，收到 {interrupt!r}。"
+                )
+
+            if interrupt and trigger != TriggerType.TIMER:
+                raise ValueError(
+                    "只有 trigger=TriggerType.TIMER 的 Event 能標 interrupt=True。\n"
+                    "進房與點擊事件是玩家自己的動作引發的，沒有「打斷」可言。"
+                )
+
+            return interrupt
 
         def trigger_type(self, default_trigger):
             """實際的觸發時機。沒指定就用掛載位置的預設值。"""

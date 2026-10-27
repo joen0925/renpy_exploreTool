@@ -22,6 +22,7 @@ game/libs/explore/          探索引擎，不要放具體房間資料
 ├── world.rpy               世界時鐘（TIMER 事件的時間來源）+ 暫停規則
 ├── closeup.rpy             近景視窗 open_closeup() + screen closeup
 ├── state_image.rpy         state_image()：會跟著遊戲狀態換圖的背景
+├── interrupt_watch.rpy     「鬼到了就把視窗關掉」的共用機制
 └── event/                  事件系統
     ├── trigger.rpy         TriggerType
     ├── condition.rpy       Condition（只讀）
@@ -44,6 +45,7 @@ game/libs/puzzle/           解謎關卡
 
 game/libs/ui/               通用 UI，跟探索工具包無關
 ├── page_popup.rpy          翻頁視窗 show_pages()
+├── jumpscare.rpy           嚇人視窗 show_jumpscare()（自己關掉）
 ├── inventory_display.rpy   物品欄（右上角）
 └── status_display.rpy      狀態欄（左上角）
 

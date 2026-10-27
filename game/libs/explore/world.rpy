@@ -124,13 +124,17 @@ init python:
             # 它們是 B 類狀態，放在被倒帶追蹤的 store 變數裡。
             # 理由見檔案開頭的說明。
 
-            # 「時間到了，該中斷玩家手上的事」的旗標。
+            # 這裡刻意**沒有**「該中斷玩家手上的事」的旗標。
             #
-            # 這裡只負責舉旗，不負責關任何視窗 ——
-            # 解謎畫面自己每格檢查這面旗子，看到就走
-            # 玩家按 ✕ 的同一條關窗路徑 (Return(PUZZLE_CLOSED))。
-            # 從外面硬砍視窗的話，拖曳到一半的狀態、倒帶都要另外收拾。
-            self.interrupt = False
+            # 原本有一個 self.interrupt，2026-10-26 刪掉了 —— 它從來
+            # 沒有人舉也沒有人讀。改成視窗畫面每 0.2 秒直接問一次
+            # pending_interrupt()，見 game/libs/explore/interrupt_watch.rpy。
+            #
+            # 為什麼不要那面旗子：旗標要有人舉、有人降，還要處理讀檔與
+            # 倒帶之後的殘留 (當初它就需要一行 after_load 重設)。
+            # 每次重新問一遍則是冪等的 —— 讀任何存檔、倒帶幾次，
+            # 答案都跟當下的狀態一致。跟熱點用 condition 推導顯隱、
+            # 而不是命令式 hide() 是同一個選擇。
 
             # 上一次 tick 的真實時間 (time.time())，None 代表還沒跑過。
             # 存這個是為了算 dt；它不是遊戲進度。
@@ -314,7 +318,7 @@ init python:
         def __repr__(self):
             return (
                 f"<WorldClock elapsed={self.elapsed:.1f}s "
-                f"paused={sorted(self.pause_reasons)} interrupt={self.interrupt}>"
+                f"paused={sorted(self.pause_reasons)}>"
             )
 
 
@@ -346,7 +350,6 @@ init python:
     # game_state.rpy 已經有一個了，同名 label 會直接撞車。
     def world_clock_after_load():
         store.world.resume_all()
-        store.world.interrupt = False
 
         # 派發層數也要歸零。
         #

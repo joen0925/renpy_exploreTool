@@ -17,6 +17,7 @@
 - [角色數值與死亡](#角色數值與死亡)
 - [近景視窗](#近景視窗)
 - [解謎關卡](#解謎關卡)
+- [被鬼打斷](#被鬼打斷)
 - [常見情境食譜](#常見情境食譜)
 - [常見錯誤](#常見錯誤)
 
@@ -1107,9 +1108,16 @@ puzzles["old_phone"] = PatternPuzzle(
 | `screen` | 要顯示哪個 screen（字串），那個 screen 會收到 `puzzle=自己` |
 | `on_success` | 答對時套用的 `Effect` |
 | `on_failure` | 答錯時套用的 `Effect`，可以是 `None` |
-| `pausable` | 解謎途中世界要不要暫停（**尚未生效**，等 TIMER） |
+| `pausable` | 解謎途中世界要不要暫停（見[被鬼打斷](#被鬼打斷)） |
 
 任何有這四個屬性的物件都能跑。寫一個普通類別 + 一個 screen 就好，引擎不用改。
+
+> **被鬼打斷不用你處理。** `pausable=False` 的關卡會被 `run_puzzle`
+> 自動掛上守望機制，新的關卡類型完全不用知道它的存在
+> （見[被鬼打斷](#被鬼打斷)）。
+>
+> 這件事刻意不交給關卡作者：忘記掛的人會做出一個「鬼抓不到玩家」的關卡，
+> 而那種錯誤試玩不會發現。
 
 > ⚠️ **一定會踩的地雷：screen 的回傳值不能用 `Return()`**
 >
@@ -1141,6 +1149,145 @@ puzzles["old_phone"] = PatternPuzzle(
 > 但如果你**自己**寫了別的 modal `call screen`（不透過 `run_puzzle` 或 `show_pages`），
 > 就要記得包起來 —— 不然玩家關掉視窗後按「返回」會倒帶回視窗裡，
 > 而 modal 視窗擋住了 quick menu 的「返回」鈕，玩家會卡在裡面出不去。
+
+---
+
+## 被鬼打斷
+
+解謎視窗與近景視窗開著的時候，玩家的手上有事做。
+這一節講「世界要不要停下來等他」，以及「鬼到了要不要把視窗關掉」。
+
+### 兩個獨立的開關
+
+| 開關 | 在哪裡填 | 意思 |
+|---|---|---|
+| `Puzzle.pausable` | 關卡定義上 | 解這個關卡時世界要不要暫停 |
+| `Event.interrupt` | 計時事件上 | 這個事件到點時可不可以關掉玩家的視窗 |
+
+**兩個都要成立才會發生「解謎解到一半被鬼打斷」。**
+`pausable=True`（預設）的關卡世界是停著的，時間根本不會前進，
+所以不管事件標不標 `interrupt` 都不會到點。
+
+### 寫一個會被打斷的關卡
+
+```renpy
+# 關卡：解的時候世界不停
+puzzles["locker"] = KeypadPuzzle(
+    code="1958",
+    pausable=False,
+    on_success=Effect(set_flags=["locker_opened"], label="locker_opens"),
+    on_failure=Effect(label="locker_wrong"),
+)
+```
+
+```renpy
+# 事件：到點時有權力關掉玩家的視窗
+room.add_event(Event(
+    id="hall.ghost_arrives",
+    trigger=TriggerType.TIMER,
+    delay=20,
+    interrupt=True,
+    effect=Effect(label="hall_ghost_arrives"),
+))
+```
+
+### 沒標 `interrupt` 的事件會排隊
+
+這是刻意的設計，不是漏掉：
+
+- **標了** → 到點就把視窗關掉，事件馬上出場
+- **沒標**（預設）→ 乖乖等玩家自己關掉視窗，然後才發生
+
+因為氣氛用的台詞（遠處的腳步聲）不該把玩家從密碼鎖裡拽出來，
+還害他按到一半的號碼全沒了。**「被打斷」要稀有才有意義。**
+
+### 被打斷不算答錯
+
+視窗被關掉時 `run_puzzle` 收到的是 `PUZZLE_INTERRUPTED`，
+而它**不套用任何 `Effect`** ——不扣血、不算答對。
+
+玩家不是放棄，是被打斷的，不該為此付代價。代價由那個計時事件自己收，
+它馬上就會出場。
+
+### 近景視窗永遠可以被打斷
+
+近景沒有 `pausable` 這種選項——它永遠是「時鐘在走」的。
+翻抽屜本來就不該是安全的。
+
+被打斷時框會關掉，而且**不會再打開**（正常情況下近景跑完事件會把框放回來）。
+
+### 你不用做的事
+
+- **不用在關卡 screen 裡掛任何 timer。** `run_puzzle` 看到 `pausable=False`
+  就自己掛上守望機制，關卡類型完全不用知道它存在。
+- **不用自己派發那個事件。** 視窗關掉後執行權回到探索迴圈，它下一圈
+  就會派發。
+- **不用處理存檔與倒帶。** 整套機制沒有任何狀態——視窗每 0.2 秒
+  重新問一次「現在有該打斷的事件嗎」，所以讀任何存檔、倒帶幾次，
+  答案都跟當下的狀態一致。
+
+> ⚠️ **不要把 `interrupt=True` 跟 `chance` 一起用。**
+>
+> 中斷的判定是只讀的，不會骰骰子（骰骰子會消耗亂數、也會產生倒帶檢查點）。
+> 所以骰輸的話**視窗已經關了、事件卻沒發生**——玩家會覺得視窗莫名其妙
+> 自己關掉。要機率性的鬼，就讓它排隊（不要標 `interrupt`）。
+
+### 鬼到了要演出來：嚇人視窗
+
+`show_jumpscare()` 是一個通用的嚇人視窗：畫面壓黑、一張圖撲到正中央、自己關掉。
+
+```renpy
+# 沒有美術素材也能用 —— Text(...) 本身就是一張合法的圖
+image ghost_face = Text("👻", size=420, color="#e8eaed")
+```
+
+```renpy
+label ghost_arrives:
+    call show_jumpscare("ghost_face")
+    $ Effect(actor="player", stats={"hp": -3}).apply(game_state)
+    "牠從你身上穿過去了。"
+    return
+```
+
+呼叫端會停在那一行，等視窗自己關掉才往下走——所以後續的順序一定對。
+
+- **傳圖片名稱，不要傳 displayable 物件。** label 的參數會進呼叫堆疊，
+  而呼叫堆疊會被寫進存檔。傳字串永遠存得起來。
+- **刻意沒有關閉鈕、也不吃點擊。** 嚇人的長度要由設計者決定，
+  不是由玩家的手速決定。想調長度就傳第二個參數：`call show_jumpscare("ghost_face", 2.0)`
+- **音效自己播**（`$ renpy.play(...)` 寫在呼叫之前），這樣聲音與畫面
+  誰先誰後由你決定。
+
+> ⚠️ **想「先演出、後扣血」的話，血不能掛在 `Effect` 上。**
+>
+> 引擎的順序是**先套用 `Effect`、再跑它帶的 `label`**（見 `collect_events`）。
+> 所以這樣寫：
+>
+> ```renpy
+> # ✗ 左上角的 ❤️ 會在圖跳出來「之前」就少掉
+> Event(..., effect=Effect(actor="player", stats={"hp": -3}, label="ghost_arrives"))
+> ```
+>
+> 玩家會**先看到自己掉血，才看到為什麼**。
+>
+> 把狀態改動搬進 label 裡就對了：
+>
+> ```renpy
+> # ✓ 圖跳出來 → 自己關掉 → 才扣血
+> Event(..., effect=Effect(label="ghost_arrives"))
+> ```
+> ```renpy
+> label ghost_arrives:
+>     call show_jumpscare("ghost_face")
+>     $ Effect(actor="player", stats={"hp": -3}).apply(game_state)
+> ```
+>
+> **死亡檢查不受影響** —— 它在整串 label 都跑完之後才做（見 `run_event_labels`），
+> 所以扣到 0 一樣會走 `on_player_death`。
+
+> **多個事件同時到點時只會放最重要的那一個**（`sequence` 最小）。
+> 所以如果腳步聲（`sequence=0`）和鬼（`sequence=10`）同時到點，
+> 玩家會先看完腳步聲，鬼要等下一輪。排事件順序時要記得這件事。
 
 ---
 

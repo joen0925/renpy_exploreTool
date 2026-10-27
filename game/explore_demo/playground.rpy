@@ -12,6 +12,14 @@
 #   完整說明見 game/libs/explore/DEVELOPER_GUIDE.md
 ##################################################
 
+# 嚇人視窗用的「小鬼」。
+#
+# 沒有美術素材，所以用一個放大的 emoji —— Text(...) 本身就是一張合法的圖。
+# 有素材之後把這一行換成 image playground_ghost_face = "images/ghost.png" 就好，
+# label 那邊一個字都不用改 (show_jumpscare 收的是圖片名稱)。
+image playground_ghost_face = Text("👻", size=420, color="#e8eaed")
+
+
 init python:
 
     def _build_closeup_background(width, height, caption, color):
@@ -143,6 +151,18 @@ init python:
             on_click="playground_open_drawer",
         ))
 
+        # pausable=False 解謎的試玩點。
+        #
+        # 點下去會開一個密碼鎖，而**解的時候世界不會停** ——
+        # 20 秒時下面那個 interrupt=True 的事件會把視窗直接關掉。
+        room.add_hotspot(Hotspot(
+            name="locker",
+            x=600, y=500,
+            label="🗃 鎖櫃",
+            condition=Condition(forbid=["playground_locker_opened"]),
+            on_click="playground_open_locker",
+        ))
+
         room.add_event(Event(
             id="playground.timer_demo",
             trigger=TriggerType.TIMER,
@@ -150,13 +170,35 @@ init python:
             effect=Effect(label="playground_timer_demo"),
         ))
 
+        # interrupt=True 的示範：這個事件會「打斷玩家手上的事」。
+        #
+        # 上面那個腳步聲事件沒有標 interrupt，所以玩家在解謎或翻抽屜時
+        # 它會乖乖排隊，等視窗關掉才發生。這一個相反 ——
+        # 到點時會把 pausable=False 的解謎視窗與近景視窗當場關掉。
+        #
+        # 為什麼氣氛台詞不該標 interrupt：把玩家從密碼鎖裡拽出來、
+        # 還害他按到一半的號碼全沒了，只為了一句遠處的腳步聲。
+        # 「被打斷」要稀有才有意義。
+        #
+        # sequence 比腳步聲大，所以兩個同時到點時腳步聲先跑
+        # (實際上不會同時 —— 腳步聲 10 秒就死了)。
+        room.add_event(Event(
+            id="playground.ghost_arrives",
+            trigger=TriggerType.TIMER,
+            delay=20,
+            interrupt=True,
+            sequence=10,
+            effect=Effect(label="playground_ghost_arrives"),
+        ))
+
         return room
 
 
 label playground_enter:
     "實驗區。這裡的東西隨便改都沒關係。"
-    "（在這裡站著別動 10 秒，會有東西自己發生。）"
+    "（在這裡站著別動 10 秒，會有東西自己發生。20 秒時還有一個。）"
     "（右邊的抽屜可以拉開來看 —— 那是近景視窗。）"
+    "（鎖櫃解的時候世界不會停，20 秒那個事件會把視窗直接關掉。）"
     return
 
 
@@ -182,6 +224,45 @@ label playground_drawer_take_photo:
 
 label playground_drawer_lining:
     "底板翹起一角，下面什麼都沒有。"
+    return
+
+
+label playground_ghost_arrives:
+    # 先嚇，後扣血。
+    #
+    # 為什麼扣血寫在這裡、而不是寫在那個 Event 的 Effect 上：
+    #
+    # 引擎的順序是「先套用 Effect，再跑它帶的 label」(見 collect_events)。
+    # 所以血如果掛在 Effect 上，左上角的 ❤️ 會在圖跳出來**之前**就少掉 ——
+    # 玩家先看到自己掉血，才看到為什麼。
+    #
+    # 搬到 label 裡之後順序就對了：圖跳出來 → 自己關掉 → 才扣血。
+    # 死亡檢查不受影響，它在整串 label 都跑完之後才做
+    # (見 run_event_labels)，所以扣到 0 一樣會走 on_player_death。
+    call show_jumpscare("playground_ghost_face") from _call_playground_ghost_scare
+
+    $ Effect(actor="player", stats={"hp": -3}).apply(game_state)
+
+    "牠從你身上穿過去了。"
+    "（這是 interrupt=True 的計時事件：如果你剛剛正在解鎖櫃或翻抽屜，"
+    "視窗會被它當場關掉。扣的 3 滴血是在視窗關掉之後才扣的。）"
+    return
+
+
+label playground_open_locker:
+    call run_puzzle("playground_locker") from _call_playground_open_locker
+    return
+
+
+label playground_locker_opens:
+    "鎖環彈開了。"
+    "裡面只有一件疊得很整齊的外套，口袋是空的。"
+    return
+
+
+label playground_locker_wrong:
+    "鎖環沒有動。"
+    "（答錯不扣血 —— 這個關卡的壓力來自時間。）"
     return
 
 

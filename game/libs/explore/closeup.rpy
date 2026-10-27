@@ -84,6 +84,12 @@ init python:
     # 理由跟 PUZZLE_SOLVED 那三個常數一樣，見 puzzle.rpy 的開頭。
     CLOSEUP_CLOSED = "closeup_closed"
 
+    # 鬼到了，框被強制關掉 (見 interrupt_watch.rpy)。
+    #
+    # 跟 CLOSEUP_CLOSED 分開是因為這兩個的後續不一樣：
+    # 玩家自己關掉 = 結束，被打斷 = 結束**而且不能再把框打開**。
+    CLOSEUP_INTERRUPTED = "closeup_interrupted"
+
     # 框比背景圖往外多出來的邊 (像素)，四邊都一樣。
     CLOSEUP_FRAME_PAD = 24
 
@@ -321,15 +327,27 @@ label open_closeup(room_name):
         # 那裡為了對話已經把時鐘暫停了。見 world.suspend_pauses 的說明。
         $ world.suspend_pauses()
 
+        # 鬼到了就把框關掉。
+        #
+        # 近景沒有 pausable 這種選項 —— 它永遠是「時鐘在走」的，
+        # 所以也永遠可以被打斷。翻抽屜本來就不該是安全的。
+        show screen world_interrupt_watch(CLOSEUP_INTERRUPTED)
+
         $ _cu_result = renpy.call_screen("closeup", room=_cu_room)
+
+        hide screen world_interrupt_watch
 
         $ world.restore_pauses()
         $ renpy.suspend_rollback(False)
 
-        # 這裡就是「第 3 件」(Puzzle.pausable + 被鬼抓關窗) 要接上來的地方：
-        # 到時候 world.interrupt 會由計時事件舉起來，上面那個 screen 裡
-        # 多一個輪詢的 timer 把視窗關掉，然後這裡判斷「是被鬼關的」就
-        # 直接 return，不要再把框打開。目前 world.interrupt 還沒有人設。
+        # 被鬼打斷：直接走人，**不要**再把框打開。
+        #
+        # 這是跟「玩家自己關掉」唯一需要分辨的地方 ——
+        # 底下那條 isinstance 檢查也會讓它 return，所以嚴格說這一段
+        # 不是必要的。寫出來是因為「被打斷之後絕對不能重開」是這個
+        # 迴圈最重要的一條規則，不該只靠一個間接的型別檢查來保證。
+        if _cu_result == CLOSEUP_INTERRUPTED:
+            return
 
         # 不是熱點就結束。
         #

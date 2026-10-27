@@ -171,6 +171,55 @@ init python:
         return max(floor, remaining)
 
 
+    def pending_interrupt(events, time_in_room, context):
+        """
+        現在有沒有「該打斷玩家手上的事」的計時事件。有就回傳那個 Event，
+        沒有就回傳 None。
+
+        events        要檢查的 Event 清單 (Room.events)
+        time_in_room  在這個房間待了幾秒 (world.time_in_room)
+        context       EventContext
+
+        **這是純查詢，不改任何狀態，可以安全地每 0.2 秒問一次。**
+        視窗類畫面 (解謎、近景) 就是這樣用它的 —— 問到不是 None 就
+        自己走玩家按 ✕ 的那條關窗路徑。
+
+        為什麼需要這個函式
+        ==================
+        解謎與近景視窗都是 call_screen，它會卡住執行。而計時事件的派發點
+        在 explore_loop 裡 —— 視窗開著的時候時鐘在走，但沒有人在檢查
+        「誰到點了」。所以不做任何事的話，玩家躲在解謎視窗裡就永遠安全，
+        Puzzle.pausable=False 等於沒有意義。
+
+        為什麼條件也要在這裡算一次
+        ========================
+        因為「視窗關掉了、結果什麼都沒發生」比「視窗沒關」糟得多 ——
+        玩家會覺得視窗莫名其妙自己關掉。所以這裡用 can_fire() 把
+        死亡、時機、條件都過一遍，確定真的會有事發生才回報。
+
+        can_fire() 本來就保證只讀、可重複呼叫 (見 Event.can_fire)，
+        所以每 0.2 秒問一次是安全的。唯一沒算的是 chance ——
+        骰骰子會消耗亂數也會產生倒帶檢查點，不能放在只讀的查詢裡。
+        這就是 Event.interrupt 的註解叫你不要跟 chance 一起用的原因。
+        """
+        if not events:
+            return None
+
+        for event in sorted(events, key=lambda e: e.sequence):
+            if not event.interrupt:
+                continue
+
+            if event.delay is None or time_in_room < event.delay:
+                continue
+
+            if not event.can_fire(context, TriggerType.TIMER, TriggerType.TIMER):
+                continue
+
+            return event
+
+        return None
+
+
     def find_duplicate_event_ids(rooms):
         """
         檢查所有房間裡有沒有重複的 event id，回傳重複的 id 清單。
