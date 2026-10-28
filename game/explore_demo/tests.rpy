@@ -573,7 +573,29 @@ testcase state_checks:
     $ _gs.actors.set("annie_ghost", "rage", 4)
     $ assert _view.stats("player", "hp") == 5
     $ assert _view.stats("annie_ghost", "rage") == 4
-    $ assert _view.stats("nobody", "hp") == 0, "查不到的回傳 0"
+    # 打錯角色 id 要直接報錯，不是安靜地回傳 0。
+    #
+    # 2026-10-28 改掉的契約：這裡原本是「查不到回傳 0」。
+    # 問題是 Condition(check=lambda s: s.stats("anie_ghost", "rage") >= 2)
+    # 這種打錯字靜態掃不到（字串在 lambda 裡面），而回傳 0 的症狀是
+    # 「那個事件就是不會發生」—— 畫面上完全看不出有什麼不對。
+    #
+    # 儲存層 (ActorState.get) 刻意「不」跟著嚴格，所以上面那些
+    # is_dead("nobody") 的單元測試不受影響。理由見 _require_known_actor。
+    python:
+        def _view_raises(fn):
+            try:
+                fn()
+            except ValueError:
+                return True
+            return False
+
+    $ assert _view_raises(lambda: _view.stats("nobody", "hp")), "查不存在的角色要報錯"
+    $ assert _view_raises(lambda: _view.is_dead("nobody")), "is_dead 查不存在的角色也要報錯"
+    $ assert _view_raises(lambda: _view.is_alive("nobody")), "is_alive 也要"
+
+    # 存在的角色照舊：沒設過的數值回傳 0
+    $ assert _view.stats("annie_ghost", "never_set") == 0, "存在的角色、沒設過的數值要回傳 0"
     $ assert _view.is_alive("player") and not _view.is_dead("player")
 
     $ _gs.actors.set("player", "hp", 0)
@@ -1381,7 +1403,7 @@ testcase save_load_flow:
 # 左上角狀態欄 (status_display)。
 #
 # 兩層過濾：
-#   1. 只顯示 player_status_display 列出來的數值 (內容層決定要給玩家看什麼)
+#   1. 只顯示主角 Actor.status_display 列出來的數值 (內容層決定要給玩家看什麼)
 #   2. 其中「沒被設定過」的跳過 (沒拿到手電筒就不該出現「🔦 0」)
 #
 # 這裡不寫死 demo 顯示了哪些數值 —— 那是內容層隨時會調的。
@@ -1400,7 +1422,7 @@ testcase status_display_flow:
 
     # demo 至少要顯示一個數值，不然底下全部沒有意義
     python:
-        store._shown = [e["stat"] for e in player_status_display
+        store._shown = [e["stat"] for e in actor_def(PLAYER_ACTOR).status_display
                         if game_state.actors.has_stat("player", e["stat"])]
     $ assert store._shown, "demo 的狀態欄至少要顯示一個數值"
 
@@ -1437,8 +1459,9 @@ testcase status_display_flow:
     # 臨時把一個沒設定過的數值加進顯示清單，確認它不會冒出來。
     # 測完立刻還原，不要污染別的測試。
     python:
-        store._orig_display = list(player_status_display)
-        player_status_display.append({"stat": "_never_set", "icon": "🔦"})
+        # 清單現在掛在主角的 Actor 上（2026-10-28 從獨立的 define 搬進來）
+        store._orig_display = list(actor_def(PLAYER_ACTOR).status_display)
+        actor_def(PLAYER_ACTOR).status_display.append({"stat": "_never_set", "icon": "🔦"})
 
     $ renpy.restart_interaction()
     pause 0.5
@@ -1453,7 +1476,7 @@ testcase status_display_flow:
     $ _trace("6_設定之後就出現")
 
     python:
-        store.player_status_display = store._orig_display
+        actor_def(PLAYER_ACTOR).status_display = store._orig_display
 
 
 # 解謎關卡 (Puzzle) 的純邏輯：哪一種結果配哪一個 Effect。
@@ -3640,7 +3663,7 @@ testcase ghost_approach_flow:
     pause 3.5
 
     $ assert game_state.events.count_of("playground.ghost_arrives") == 1, f"等了 3.5 秒鬼應該到了，實際次數 {game_state.events.count_of('playground.ghost_arrives')}"
-    $ assert renpy.showing("pg_player_back"), "演出開始時主角的立繪應該在畫面上"
+    $ assert renpy.showing("me"), "演出開始時主角的立繪應該在畫面上"
     $ assert game_state.actors.get("player", "hp") == _rb.ga_hp_before, f"演出還在跑就不該扣血。現在 {game_state.actors.get('player', 'hp')}"
     $ _trace("2_演出開始了，立繪在、還沒扣血")
 
@@ -3652,8 +3675,8 @@ testcase ghost_approach_flow:
     $ _trace("3_演出推完回到探索")
 
     # 第 1 件：立繪一定要收乾淨。
-    $ assert not renpy.showing("pg_ghost"), "演完要把鬼的立繪收掉 (不然它會黏在探索畫面上)"
-    $ assert not renpy.showing("pg_player_back"), "演完要把主角的立繪收掉"
+    $ assert not renpy.showing("annie"), "演完要把鬼的立繪收掉 (不然它會黏在探索畫面上)"
+    $ assert not renpy.showing("me"), "演完要把主角的立繪收掉"
 
     # 第 2 件：演完才扣血。
     $ assert game_state.actors.get("player", "hp") == _rb.ga_hp_before - 3, f"演完要扣 3 滴血。之前 {_rb.ga_hp_before}、現在 {game_state.actors.get('player', 'hp')}"
@@ -3662,3 +3685,133 @@ testcase ghost_approach_flow:
     # 兩種演出共用同一個代價 —— 換演出方式不該改到扣幾滴血。
     # (扣血寫在分支外面就是為了這件事)
     $ assert renpy.get_screen("explore") is not None, "演完要回到探索畫面"
+
+
+# 角色目錄 (Actor) 的純邏輯。
+#
+# 這個目錄存在的主要價值不是「多了幾個欄位」，而是兩個防呆：
+#   1. 重複定義同一個角色 → 報錯（不然後面那筆會安靜地蓋掉前面）
+#   2. Effect(actor=...) 打錯字 → 啟動時報錯
+#
+# 第 2 點的症狀最難查：打錯的話 ActorState 會憑空生出一個 hp=0 的
+# 幽靈角色，而真正的目標一滴血都沒掉 —— 遊戲照跑，只是主角變無敵。
+testcase actor_catalog_checks:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+
+    # --- demo 的目錄本身 ---
+    $ assert actor_def("player") is not None, "主角一定要在目錄裡 (引擎用 PLAYER_ACTOR 查他)"
+    $ assert actor_def("annie_ghost") is not None, "安妮應該在目錄裡"
+    $ assert actor_def("no_such_actor") is None, "查不到的回傳 None"
+
+    $ assert actor_def("annie_ghost").name == "安妮"
+    $ assert actor_def("annie_ghost").stats == {"hp": 3, "rage": 0}
+    $ assert actor_name("annie_ghost") == "安妮"
+    $ assert actor_name("no_such_actor") == "no_such_actor", "查不到就回傳 key 本身 (debug 面板寧可顯示 raw id 也不要當掉)"
+
+    # 鬼的 rage 不該有 status_display —— 那是不給玩家看的內部計數器
+    $ assert actor_def("annie_ghost").status_display == [], "鬼不該有狀態欄設定"
+    $ assert actor_def("player").status_display, "主角要有狀態欄設定"
+
+    # --- add_actor 的重複檢查 ---
+    python:
+        def _add_raises(a, b):
+            _acts = {}
+            add_actor(_acts, a)
+            try:
+                add_actor(_acts, b)
+            except ValueError:
+                return True
+            return False
+
+    $ assert _add_raises(Actor(key="x", name="X"), Actor(key="x", name="又一個 X")), "同一個 key 重複定義要報錯"
+    $ assert not _add_raises(Actor(key="x", name="X"), Actor(key="y", name="Y")), "不同 key 不該誤報"
+
+    # 加進去之後 dict key 一定等於 Actor.key —— key 是推出來的，
+    # 所以不可能發生 item_catalog 那種「兩邊不一致」的問題
+    python:
+        store._ac = {}
+        add_actor(store._ac, Actor(key="ghost2", name="鬼二"))
+
+    $ assert list(store._ac) == ["ghost2"], f"dict key 應該是 Actor.key，實際 {list(store._ac)}"
+
+    # --- 初始數值從目錄寫進 GameState ---
+    #
+    # 這個 testcase 不經過 label start，所以要自己呼叫一次 ——
+    # 正常遊戲是 init_actor_stats 在第一次 change_room 之前呼叫的。
+    python:
+        init_actor_stats_from_catalog()
+
+        store._ac_annie_stats = dict(game_state.actors.stats_of("annie_ghost"))
+        store._ac_player_hp = game_state.actors.get("player", "hp")
+
+    $ assert store._ac_annie_stats == {"hp": 3, "rage": 0}, f"初始數值應該來自 Actor.stats，實際 {store._ac_annie_stats}"
+    $ assert store._ac_player_hp == 5, f"主角的初始血量也該來自目錄，實際 {store._ac_player_hp}"
+
+    # --- find_unknown_actor_ids ---
+    python:
+        store._ac_room = Room(name="ac_room", background=None, bg_width=1920)
+
+        # 掛一個打錯字的 Effect
+        store._ac_room.add_event(Event(
+            id="ac.typo",
+            effect=Effect(actor="playr", stats={"hp": -1}),
+        ))
+
+        # 再掛一個對的，確認不會誤報
+        store._ac_room.add_event(Event(
+            id="ac.ok",
+            effect=Effect(actor="player", stats={"hp": -1}),
+        ))
+
+        store._ac_bad = find_unknown_actor_ids({"ac_room": store._ac_room})
+
+    $ assert store._ac_bad == [("ac.typo", "playr")], f"應該只抓到打錯的那一個，實際 {store._ac_bad}"
+
+    # 熱點上的事件也要掃到 —— 大部分 Effect 其實掛在熱點上
+    python:
+        store._ac_room2 = Room(name="ac_room2", background=None, bg_width=1920)
+        store._ac_room2.add_hotspot(Hotspot(
+            name="h", x=0, y=0,
+            events=[Event(id="ac.hotspot_typo", effect=Effect(actor="anie_ghost", stats={"rage": 1}))],
+        ))
+        store._ac_bad2 = find_unknown_actor_ids({"ac_room2": store._ac_room2})
+
+    $ assert store._ac_bad2 == [("ac.hotspot_typo", "anie_ghost")], f"熱點上的事件也要掃到，實際 {store._ac_bad2}"
+
+    # 解謎的 on_success / on_failure 也要掃到
+    python:
+        store._ac_puzzles = {
+            "p1": KeypadPuzzle(
+                code="1",
+                on_success=Effect(actor="player", stats={"hp": 1}),
+                on_failure=Effect(actor="playr", stats={"hp": -1}),
+            ),
+        }
+        store._ac_bad3 = find_unknown_actor_ids({}, store._ac_puzzles)
+
+    $ assert store._ac_bad3 == [("puzzle:p1", "playr")], f"解謎的 Effect 也要掃到，實際 {store._ac_bad3}"
+
+    # 沒有 actor 的 Effect 不該被誤報
+    python:
+        store._ac_room3 = Room(name="ac_room3", background=None, bg_width=1920)
+        store._ac_room3.add_event(Event(id="ac.no_actor", effect=Effect(set_flags=["x"])))
+        store._ac_bad4 = find_unknown_actor_ids({"ac_room3": store._ac_room3})
+
+    $ assert store._ac_bad4 == [], f"沒有 actor= 的 Effect 不該被誤報，實際 {store._ac_bad4}"
+
+    # demo 自己的房間與解謎要是乾淨的（這條會在改壞 demo 時叫）
+    $ assert find_unknown_actor_ids(rooms, puzzle_catalog) == [], f"demo 的 Effect 不該指到不存在的角色，實際 {find_unknown_actor_ids(rooms, puzzle_catalog)}"
+
+    # --- StateView 知道目前在哪個房間 ---
+    python:
+        store._ac_view = game_state.view()
+        store._ac_view_room = game_state.view(room=store._ac_room)
+
+    $ assert store._ac_view_room.room_name() == "ac_room", f"明確傳房間時要用那一間，實際 {store._ac_view_room.room_name()}"
+    $ assert store._ac_view_room.in_room("ac_room"), "in_room 應該成立"
+    $ assert store._ac_view_room.in_room("other", "ac_room"), "in_room 可以給好幾個名字"
+    $ assert not store._ac_view_room.in_room("other"), "不在那間就該是 False"
+
+    # 不傳房間的話會去問 current_room
+    $ assert store._ac_view.room_name() == (current_room.name if current_room else None), "不傳房間時要反映玩家真正在的房間"

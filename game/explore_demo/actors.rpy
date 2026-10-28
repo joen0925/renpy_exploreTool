@@ -1,35 +1,21 @@
 ##################################################
 # actors.rpy
 #
-#   角色的初始數值 (遊戲內容，不屬於 game/libs/ 的引擎)
+#   玩家死亡流程 (遊戲內容，不屬於 game/libs/ 的引擎)
+#
+#   角色本身的定義已經搬到 characters/ 了 ——
+#   一個檔案一個角色，立繪／名字／初始數值／那個角色自己的演出都在裡面。
+#   (2026-10-28。原本這裡有 actor_start_stats 與 player_status_display
+#    兩張表，而「安妮是誰」沒有任何地方定義，只有散在各處的 "annie_ghost"
+#    字串。現在初始數值在 Actor.stats、狀態欄在 Actor.status_display)
 #
 #   引擎只認得一個數值名稱：hp，歸零代表死亡。
 #   其他名稱 (rage / battery / stamina) 引擎完全不管，
 #   歸零就只是歸零，要有後果請自己用 Condition 接。
 #
 #   沒有設定 hp 的角色是「無敵」的 —— 引擎不會給任何預設血量。
-#   所以要能被打死的角色，一定要在下面這張表裡出現。
+#   所以要能被打死的角色，一定要在他的 Actor 裡填 stats={"hp": n}。
 ##################################################
-
-# 要調整血量、憤怒值就改這裡。
-# 外層是角色 id，內層是那個角色的初始數值。
-define actor_start_stats = {
-    "player":      {"hp": 5},
-    "annie_ghost": {"hp": 3, "rage": 0},
-}
-
-# 狀態欄 (左上角) 要顯示哪些數值，由上往下依這個順序排。
-#
-# 只有列在這裡的才會顯示 —— 所以 annie_ghost 的 rage 不會漏給玩家看到。
-# 而且列在這裡但「沒被設定過」的數值也會自動跳過，
-# 例如玩家還沒拿到手電筒時就不會出現一列「🔦 0」。
-#
-# stat  要顯示哪個數值 (對應 actor_start_stats 裡的名稱)
-# icon  前面的圖示，用 emoji 就好，不需要美術素材
-# name  圖示後面的文字說明，可省略 (只有 icon 就夠清楚的話)
-define player_status_display = [
-    {"stat": "hp", "icon": "❤️"},
-]
 
 # 玩家死亡時要跳過去的 label。
 #
@@ -40,11 +26,11 @@ define on_player_death = "game_over"
 
 # label start 會呼叫這個，要排在第一次 change_room 之前 ——
 # 進房事件本身就可能扣血。
+#
+# 初始數值來自角色目錄 (每個角色的 Actor.stats)，
+# 所以新增角色不用回來改這裡。
 label init_actor_stats:
-    python:
-        for _actor, _stats in actor_start_stats.items():
-            for _stat, _value in _stats.items():
-                game_state.actors.set(_actor, _stat, _value)
+    $ init_actor_stats_from_catalog()
     return
 
 

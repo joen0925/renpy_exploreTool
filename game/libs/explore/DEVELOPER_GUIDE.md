@@ -14,6 +14,7 @@
 - [Condition 條件](#condition-條件)
 - [Effect 結果](#effect-結果)
 - [Item 物品](#item-物品)
+- [角色](#角色)
 - [角色數值與死亡](#角色數值與死亡)
 - [近景視窗](#近景視窗)
 - [解謎關卡](#解謎關卡)
@@ -689,6 +690,145 @@ def build_items():
 
 物品欄（`InventoryState`）只存 `{key: 數量}`，名稱圖示都是即時查目錄。
 畫面在右上角，已經自動掛好了，數量大於 1 會顯示 `×N`，點一下會用翻頁視窗顯示描述。
+
+---
+
+## 角色
+
+**一個檔案一個角色。** 關於安妮的一切——立繪、名字、初始數值、她自己的演出
+——都在 `characters/annie.rpy` 裡。跟「一個檔案一個房間」是同一個原則。
+
+```
+game/explore_demo/characters/
+├── characters.rpy     ← 登記（build_actors）+ 共用的站位 transform
+├── me.rpy             ← 主角
+└── annie.rpy          ← 安妮
+```
+
+### 寫一個角色
+
+```renpy
+##################################################
+# annie.rpy —— 安妮
+##################################################
+
+# 立繪。第一個字 annie 是 tag，後面是屬性。
+image annie calm  = "characters/annie/calm.png"
+image annie angry = "characters/annie/angry.png"
+
+# 她說話時對話框上顯示的名字
+define annie = Character("安妮")
+
+init python:
+    def build_annie():
+        return Actor(
+            key="annie_ghost",
+            name="安妮",
+            stats={"hp": 3, "rage": 0},
+        )
+```
+
+然後在 `characters.rpy` 的 `build_actors()` 裡加一行：
+
+```renpy
+add_actor(actors, build_annie())
+```
+
+### 圖很多的時候用迴圈
+
+衣服 × 表情的組合會爆開，但不用一行一行寫：
+
+```renpy
+init python:
+    for _outfit in ("casual", "dress"):
+        for _expr in ("calm", "angry", "weak"):
+            renpy.image(
+                "annie %s %s" % (_outfit, _expr),
+                "characters/annie/%s_%s.png" % (_outfit, _expr),
+            )
+```
+
+之後就是普通的 `show`：
+
+```renpy
+show annie casual angry       # 換衣服 + 換表情
+show annie weak               # 只換表情 —— 衣服與位置都自動保留
+hide annie                    # 一行收乾淨，不用管她現在是什麼狀態
+```
+
+> **「她現在是什麼表情、站在哪」不要自己存。**
+>
+> Ren'Py 的 `show` 把這些記在它自己的 scene list 裡，而那個東西**本來就會
+> 進存檔、本來就會被倒帶正確還原**。自己存一份就要自己重新解決存檔與倒帶
+> ——而那是這個專案已經踩過兩次的坑（暫停計數、抽屜底圖）。
+
+### Actor 只有四個欄位
+
+| 欄位 | 說明 |
+|---|---|
+| `key` | 唯一識別。`Effect(actor=...)` 與 `s.stats(...)` 用的就是這個 |
+| `name` | 顯示名稱 |
+| `stats` | 初始數值。開新遊戲時寫進 `GameState` |
+| `status_display` | 狀態欄要顯示這個角色的哪些數值 |
+
+**立繪、台詞、位置都不在這裡**，因為 Ren'Py 已經有更好的地方放它們
+（image 命名空間、`Character`、`show ... at ...`）。`Actor` 只負責
+引擎需要知道的那一小部分。
+
+### 兩個會救你的檢查
+
+**重複定義會報錯。** `add_actor` 發現 key 已經存在就直接爆掉——
+直接寫 `actors["annie"] = ...` 的話，第二筆會安靜地蓋掉第一筆。
+
+**打錯 `actor=` 會在啟動時報錯。** 這個很重要：
+
+```renpy
+Effect(actor="playr", stats={"hp": -1})     # ✗ 打錯字
+```
+
+不擋的話 `ActorState` 會憑空生出一個 `hp=0` 的幽靈角色，而**真正的玩家
+一滴血都沒掉**——遊戲照跑，只是主角變成無敵。
+
+條件式裡打錯也會報錯：
+
+```renpy
+Condition(check=lambda s: s.stats("anie_ghost", "rage") >= 2)   # ✗ 啟動後第一次求值就爆
+```
+
+這種靜態掃不到（字串在 lambda 裡面），所以擋在 `StateView` 那一層。
+症狀是「那個事件就是不會發生」，畫面上完全看不出有什麼不對。
+
+### 條件式知道玩家在哪個房間
+
+```renpy
+Condition(check=lambda s: s.in_room("chapel"))
+Condition(check=lambda s: s.in_room("chapel", "graveyard"))
+Condition(check=lambda s: s.room_name() == "attic")
+```
+
+拿來做「安妮在有十字架的房間裡就一直是虛弱的」這種表情推導：
+
+```renpy
+image annie mood = state_image(
+    (Condition(check=lambda s: s.in_room("chapel")), "annie weak"),
+    (Condition(check=lambda s: s.stats("annie_ghost", "rage") >= 4), "annie furious"),
+    default="annie calm",
+)
+```
+
+> 只拿得到**房間名稱**，拿不到 `Room` 物件。因為條件式會在畫面每次重繪時
+> 被求值（每 16ms 一次），把物件交出去等於開了一道「每秒 60 次都能改場景」
+> 的門——而 `StateView` 存在的全部意義就是讓條件式結構上改不到任何東西。
+
+### 什麼時候用 `state_image`、什麼時候直接 `show`
+
+| | 用什麼 |
+|---|---|
+| 這一句我就是要她生氣 | `show annie angry` ← **大部分情況** |
+| 她的臉要跟著狀態走，而且散在好幾個房間、怕漏改 | `state_image` |
+
+表情通常是**作者的選擇**，不是狀態的推論。先用 `show`，等真的遇到
+「我有六個地方要記得改」才用 `state_image`。
 
 ---
 

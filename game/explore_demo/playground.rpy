@@ -24,50 +24,6 @@
 #   jumpscare  長度由設計者決定、點擊也跳不掉，但沒有鋪陳的空間
 define PLAYGROUND_GHOST_STYLE = "approach"
 
-# 嚇人視窗用的「小鬼」。
-#
-# 沒有美術素材，所以用一個放大的 emoji —— Text(...) 本身就是一張合法的圖。
-# 有素材之後把這一行換成 image playground_ghost_face = "images/ghost.png" 就好，
-# label 那邊一個字都不用改 (show_jumpscare 收的是圖片名稱)。
-image playground_ghost_face = Text("👻", size=420, color="#e8eaed")
-
-
-##################################################
-# 第二種演出：對話模式，鬼從左邊慢慢走到右邊的主角身上
-##################################################
-
-# 走近用的立繪。一樣用 emoji 代替素材。
-#
-# 這兩張是「站在場景裡的人」，跟上面那張撲到全螢幕的臉不同用途，
-# 所以尺寸基準小很多 —— 實際大小由下面的 zoom 決定。
-image pg_ghost = Text("👻", size=300, color="#cdd6e0")
-image pg_player_back = Text("🧍", size=300, color="#e8eaed")
-
-
-# 站定在某個位置。只有「第一次出場」用這個。
-#
-# x 是 xalign (0 = 最左, 1 = 最右)，z 是 zoom (越大 = 越近)。
-# yalign 固定貼著地面附近，走近的時候不該上下飄。
-transform pg_stand(x, z):
-    xalign x
-    yalign 0.98
-    zoom z
-
-
-# 從「現在的位置」走到 (x, z)，花 t 秒。
-#
-# 為什麼只寫目標、不用寫起點：Ren'Py 重新 show 一張已經在畫面上的圖時，
-# 新的 transform 會繼承舊 transform 的狀態
-# (renpy/display/scenelists.py 的 transform_state -> take_state)。
-# 所以 linear 是從「它現在在哪」補間過去的。
-#
-# 附帶好處是**不怕玩家點太快**：上一步的動畫還沒走完就被推進下一句時，
-# 下一步會從「動畫走到一半的位置」接著走，不會跳。
-transform pg_step(x, z, t=1.0):
-    yalign 0.98
-    linear t xalign x zoom z
-
-
 init python:
 
     def _build_closeup_background(width, height, caption, color):
@@ -313,7 +269,7 @@ label playground_ghost_arrives:
 #
 # 刻意不講任何話 —— 收尾的台詞在上面那個 label，排在扣血之後。
 label playground_ghost_jumpscare:
-    call show_jumpscare("playground_ghost_face") from _call_playground_ghost_scare
+    call show_jumpscare("annie scare") from _call_playground_ghost_scare
     return
 
 
@@ -334,37 +290,37 @@ label playground_ghost_approach:
     #
     # 想改成第一人稱 (沒有主角立繪、鬼直接朝鏡頭走來)，
     # 把這兩行跟最後那行 hide 刪掉就好，其他完全不用動。
-    show pg_player_back at pg_stand(0.86, 0.85)
+    show me back at stand(0.86, 0.85)
     with dissolve
 
     "背後有腳步聲。你回過頭。"
 
-    # 第一步：很遠，所以很小。第一次出場用 pg_stand 定位。
-    show pg_ghost at pg_stand(0.06, 0.30)
+    # 第一步：很遠，所以很小。第一次出場用 stand 定位。
+    show annie mood at stand(0.06, 0.30)
     with dissolve
 
     "走廊的另一頭站著一個東西。"
 
-    # 之後每一步只寫目標位置，補間自動從現在的位置開始 (見 pg_step)。
+    # 之後每一步只寫目標位置，補間自動從現在的位置開始 (見 characters.rpy 的 step)。
     #
     # 每一步都配一句話，所以「走多快」其實是玩家自己的閱讀速度 ——
     # 動畫在講話的同時進行，讀完這句它剛好走到。
-    show pg_ghost at pg_step(0.30, 0.50, 1.2)
+    show annie mood at step(0.30, 0.50, 1.2)
     "它往前了一點。你聽見自己的呼吸聲變大。"
 
-    show pg_ghost at pg_step(0.55, 0.75, 1.1)
+    show annie mood at step(0.55, 0.75, 1.1)
     "近到看得出它沒有臉。"
 
-    show pg_ghost at pg_step(0.78, 1.15, 0.9)
+    show annie mood at step(0.78, 1.15, 0.9)
     "它站到你面前。"
 
     # 最後一步刻意又快又大 ——
     # 前面慢慢靠近就是為了讓這一下的加速有對比。
-    show pg_ghost at pg_step(0.86, 2.0, 0.22)
+    show annie mood at step(0.86, 2.0, 0.22)
     "——"
 
-    hide pg_ghost
-    hide pg_player_back
+    hide annie
+    hide me
     with dissolve
 
     return

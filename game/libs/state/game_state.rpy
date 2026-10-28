@@ -79,9 +79,18 @@ init python:
             for section in self.sections():
                 section.reset()
 
-        def view(self):
-            """取得唯讀視圖，給 Condition 判斷用。"""
-            return StateView(self)
+        def view(self, room=None):
+            """
+            取得唯讀視圖，給 Condition 判斷用。
+
+            room 可以指定「要以哪個房間為準」。不給的話視圖會去問
+            store.current_room，也就是玩家現在真正在的房間。
+
+            需要指定的情況只有一種：派發離開房間的事件時，current_room
+            還沒被換掉（change_room 刻意先派發再換），但未來若順序改變，
+            EventContext 傳自己的房間進來就永遠是對的。
+            """
+            return StateView(self, room)
 
         def __repr__(self):
             return f"<GameState {self.inventory} {self.flags} {self.events} {self.actors}>"
@@ -99,9 +108,10 @@ init python:
         如果條件求值有副作用，每秒 60 次會把遊戲狀態改爛。
         """
 
-        def __init__(self, game_state):
+        def __init__(self, game_state, room=None):
             # 底線開頭表示「不要碰」。這裡不提供任何會改狀態的方法。
             self._gs = game_state
+            self._room = room
 
         # --- 物品 ---
 
@@ -127,6 +137,41 @@ init python:
         def is_event_dead(self, event_id):
             return self._gs.events.is_dead(event_id)
 
+        # --- 所在的房間 ---
+
+        def room_name(self):
+            """
+            玩家現在在哪個房間（字串）。還沒進任何房間時是 None。
+
+                Condition(check=lambda s: s.room_name() == "chapel")
+
+            為什麼只給名稱、不給 Room 物件：
+            Room 身上有 hotspots 這種可以被改的東西，而條件式會在畫面
+            每次重繪時被求值（每 16ms 一次）。把物件交出去就等於開了一道
+            「每秒 60 次都能改場景」的門 —— 而 StateView 存在的全部意義
+            就是讓條件式「結構上」改不到任何東西。
+
+            用 getattr 問 store.current_room 是為了維持 game/libs/state/
+            不依賴 explore 的獨立性（沒有探索工具包時回傳 None，不會爆）。
+            """
+            room = self._room
+
+            if room is None:
+                room = getattr(store, "current_room", None)
+
+            return getattr(room, "name", None)
+
+        def in_room(self, *names):
+            """
+            玩家是不是在這幾個房間之一。
+
+                Condition(check=lambda s: s.in_room("chapel"))
+                Condition(check=lambda s: s.in_room("chapel", "graveyard"))
+
+            拿來做「安妮在有十字架的房間裡就一直是虛弱的」這種表情推導。
+            """
+            return self.room_name() in names
+
         # --- 角色數值 ---
 
         def stats(self, actor, name):
@@ -137,14 +182,57 @@ init python:
                 Condition(check=lambda s: s.stats("annie_ghost", "rage") >= 5)
 
             名稱跟 Effect(stats={...}) 對齊，讀寫兩邊用同一個字。
+
+            打錯角色 id 會直接報錯（見 _require_known_actor）。
             """
+            self._require_known_actor(actor)
             return self._gs.actors.get(actor, name)
 
         def is_dead(self, actor):
+            self._require_known_actor(actor)
             return self._gs.actors.is_dead(actor)
 
         def is_alive(self, actor):
+            self._require_known_actor(actor)
             return self._gs.actors.is_alive(actor)
+
+        def _require_known_actor(self, actor):
+            """
+            條件式裡的角色 id 打錯就直接報錯。
+
+            為什麼讀取也要擋：Effect(actor=...) 的打錯字可以在啟動時
+            靜態掃出來（見 find_unknown_actor_ids），但這種不行 ——
+
+                Condition(check=lambda s: s.stats("anie_ghost", "rage") >= 2)
+
+            字串在 lambda 裡面，靜態掃不到。而它的症狀是最難查的那種：
+            回傳 0 → 條件永遠不成立 → 那個事件就是不會發生，
+            畫面上完全看不出有什麼不對。
+
+            為什麼 ActorState 不跟著嚴格 (它的 get 仍然「查不到回傳 0」)：
+            那一層是「儲存」，像 dict 一樣寬鬆才好測 —— 單元測試要能
+            餵假的角色 id 進去驗 is_dead 的四種情況，不該被迫把測試用的
+            假角色塞進遊戲的角色目錄。
+            StateView 是「設計者寫條件的介面」，打錯字在這裡完全看不出來，
+            所以嚴格擋在這一層。
+            (2026-10-28 改。原本這裡也是「查不到回傳 0」)
+
+            沒有宣告角色目錄的專案一律跳過檢查 ——
+            known_actor_ids() 在那種情況回傳 None（而不是空集合），
+            所以「沒在用角色目錄」與「目錄是空的」分得出來。
+            (actor.rpy 跟這個檔案同在 game/libs/state/，會一起被複製走，
+            所以可以直接呼叫它)
+            """
+            known = known_actor_ids()
+
+            if known is None or actor in known:
+                return
+
+            raise ValueError(
+                f"條件式裡用了不存在的角色 \"{actor}\"。\n"
+                f"目前有的是：{sorted(known)}\n"
+                f"是不是拼錯了，或是忘了在 build_actors() 裡加進去？"
+            )
 
         # --- 統一查詢 ---
 

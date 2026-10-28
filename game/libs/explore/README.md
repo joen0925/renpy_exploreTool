@@ -32,6 +32,7 @@ game/libs/explore/          探索引擎，不要放具體房間資料
 
 game/libs/state/            遊戲狀態，不依賴 explore，可單獨複製
 ├── item.rpy                Item + item_def()
+├── actor.rpy               Actor + 角色目錄檢查
 ├── inventory_state.rpy     物品欄
 ├── flag_state.rpy          旗標
 ├── event_state.rpy         事件的觸發次數與死亡名單
@@ -51,7 +52,11 @@ game/libs/ui/               通用 UI，跟探索工具包無關
 
 game/explore_demo/          遊戲內容，可以整個刪掉換成自己的
 ├── rooms.rpy               build_rooms() + init 1 rooms
-├── actors.rpy              角色初始數值 + on_player_death + game_over
+├── actors.rpy              on_player_death + game_over
+├── characters/             一個檔案一個角色
+│   ├── characters.rpy      build_actors() + init 1 actor_catalog + 站位 transform
+│   ├── me.rpy              主角
+│   └── annie.rpy           安妮（立繪 / Character / Actor / 走近的演出）
 ├── demo_room.rpy           示範房間與它的 label
 ├── kitchen.rpy             第二個示範房間（驗證房間切換）
 ├── attic.rpy               第三個示範房間（角色數值與死亡）

@@ -310,9 +310,9 @@ init python:
         """
         派發事件時傳進去的執行環境。
 
-        刻意不放 player —— 目前這個專案沒有任何角色屬性，
-        玩家的一切就是 game_state 加上所在的房間。
-        之後真的需要時再加。
+        刻意不放角色定義 —— 角色是靜態定義，條件式要查就用
+        actor_def(key) 現查（見 game/libs/state/actor.rpy）。
+        放進這裡只會多一份可能跟目錄不同步的複本。
         """
 
         def __init__(self, game_state, current_room=None):
@@ -322,7 +322,12 @@ init python:
             # 唯讀視圖，給 Condition 用。
             # 它持有 game_state 的引用，所以查詢永遠是即時的 ——
             # 前面的 Effect 改了狀態，後面的 Condition 馬上看得到。
-            self.view = game_state.view()
+            #
+            # 房間明確傳進去，而不是讓視圖自己去問 store.current_room：
+            # 派發「離開房間」的事件時，條件式該看到的是正要離開的那一間。
+            # 目前 change_room 剛好是先派發再換，所以兩者一致；
+            # 傳進去是為了不依賴那個順序。
+            self.view = game_state.view(room=current_room)
 
         def __repr__(self):
             room = self.current_room.name if self.current_room else None

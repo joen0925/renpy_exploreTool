@@ -238,7 +238,12 @@ label attic_annie_attack:
     return
 
 label attic_annie_furious:
-    "「你為什麼還在這裡。」"
+    # 用 annie 這個 Character 講話，對話框上會出現「安妮」。
+    #
+    # 這個 Character 定義在 characters/annie.rpy，名字只寫在那一個地方。
+    # 旁白加引號 ("「……」") 也還是合法的寫法 —— 適合「你看不見的東西
+    # 在說話」；有名字適合「她就站在你面前」。
+    annie "你為什麼還在這裡。"
     "冰冷的手掐住你的喉嚨。"
     return
 
