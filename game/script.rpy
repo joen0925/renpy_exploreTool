@@ -3,7 +3,6 @@
 # 宣告該遊戲使用的角色。 color 參數
 # 為角色的名稱著色。
 
-define e = Character("艾琳")
 
 
 # 遊戲從這裡開始。
@@ -21,7 +20,7 @@ label start:
 
     # 切換到示範房間。這個房間設了 on_enter="demo_room_enter"，
     # 所以 change_room() 會自動去跑那個 label 講開場白。
-    $ change_room("demo_room")
+    $ change_room("corridor")
 
     # 進入探索主迴圈，把控制權交給玩家。
     # 這個 label 不會自己結束，要離開探索狀態時

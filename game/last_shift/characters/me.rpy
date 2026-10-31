@@ -38,5 +38,6 @@ init python:
             # 例如還沒拿到手電筒時就不會出現一列「🔦 0」。
             status_display=[
                 {"stat": "hp", "icon": "❤️"},
+                {"stat": "battery", "icon": "🔦"},
             ],
         )

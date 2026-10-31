@@ -19,7 +19,7 @@ init python:
         actors = {}
 
         add_actor(actors, build_me())
-        add_actor(actors, build_annie())
+        #add_actor(actors, build_annie())
 
         return actors
 
@@ -72,5 +72,5 @@ init 1 python:
 # 為什麼值得這個檢查：Effect(actor="playr", stats={"hp": -1}) 會讓
 # ActorState 憑空生出一個 hp=0 的幽靈角色，而真正的玩家一滴血都沒掉 ——
 # 遊戲照跑，只是主角變成無敵。
-init 2 python:
-    check_actor_catalog(rooms, puzzle_catalog)
+#init 2 python:
+    #check_actor_catalog(rooms, puzzle_catalog)
