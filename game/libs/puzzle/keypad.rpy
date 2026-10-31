@@ -46,12 +46,14 @@ init python:
 
             # 解謎途中世界要不要暫停。
             #
-            # 目前「還沒有實際效果」—— 因為還沒有會跑的東西 (TIMER 尚未實作)。
-            # 欄位先留著是為了不要把門關上：之後接上追殺系統時，
-            # pausable=False 的關卡要讓鬼繼續逼近。
+            #   True  (預設)  世界停下來等玩家。單純的謎題，想多久都沒關係。
+            #   False         世界繼續走，鬼照樣逼近 —— 而且標了
+            #                 interrupt=True 的計時事件到點時會把視窗
+            #                 當場關掉 (回傳 PUZZLE_INTERRUPTED，不算答錯)。
             #
-            # 注意那時候還要先把世界時鐘搬出 explore() 畫面 ——
-            # 現在時鐘長在那個 screen 裡，畫面一被蓋住就停了。
+            # 被打斷的處理由 run_puzzle 自己掛上，關卡類型完全不用管
+            # (見 game/libs/explore/interrupt_watch.rpy)。
+            # 完整說明見 DEVELOPER_GUIDE.md 的「被鬼打斷」那一節。
             pausable=True,
         ):
             # run_puzzle 要找的四個屬性

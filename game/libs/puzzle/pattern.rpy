@@ -150,7 +150,9 @@ init python:
             # 少於幾個點就放開算「手滑」。預設 4，跟 Android 一樣。
             min_length=4,
 
-            # 解謎途中世界要不要暫停。目前還沒有實際效果，理由同 KeypadPuzzle。
+            # 解謎途中世界要不要暫停。False = 鬼會繼續逼近，到點時
+            # 把視窗當場關掉。說明同 KeypadPuzzle，完整版見
+            # DEVELOPER_GUIDE.md 的「被鬼打斷」那一節。
             pausable=True,
         ):
             # run_puzzle 要找的四個屬性
