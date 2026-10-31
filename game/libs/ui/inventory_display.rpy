@@ -72,7 +72,7 @@ label _show_item_detail(item_key):
         _detail_pages = [{
             "title": _item.name if _item else item_key,
             "text": (_item.description if _item and _item.description
-                     else "（沒有更多資訊）"),
+                else "（沒有更多資訊）"),
             "img": _item.icon if _item else None,
         }]
 
