@@ -372,3 +372,103 @@ testcase last_shift_step5:
     $ assert not _missing, "找不到這些 label：\n" + "\n".join(_missing)
 
     $ store.game_state = _ls_old_state
+
+
+##################################################
+# 第 6 步：結局
+#
+#   執行方式：renpy.exe <專案路徑> test last_shift_step6
+#
+#   計時事件不等真的時間 —— 直接拿「在房間待了幾秒」去問
+#   due_timer_events，跟探索主迴圈 (room_manager.rpy) 同一套派發。
+##################################################
+
+init python:
+
+    def _ls_tick(room_name, seconds):
+        """模擬在房間待了 seconds 秒，回傳這一輪計時事件要跑的 label。"""
+        room = rooms[room_name]
+        due = due_timer_events(room.events, seconds)
+        return collect_events(
+            due,
+            TriggerType.TIMER,
+            EventContext(store.game_state, room),
+            TriggerType.TIMER,
+            max_fires=1,
+        )
+
+    def _ls_hp():
+        return store.game_state.actors.get("player", "hp")
+
+
+testcase last_shift_step6:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _ls_old_state = _ls_fresh_state()
+
+    # --- 素材與角色 ---
+    $ assert renpy.has_image("sister_scare"), "妹妹的嚇人圖沒有宣告"
+    $ assert renpy.has_image("father_stand"), "爸爸的立繪沒有宣告"
+    $ assert "sister" in actor_catalog and "father" in actor_catalog, "妹妹與爸爸要加進角色目錄"
+    $ assert player_death_label() is None, "活著的時候不該有死亡 label"
+
+    # --- 回電之前：什麼都不會發生，而且事件不會被用掉 ---
+    $ assert "sister_phone_unlocked_hear_something" not in _ls_enter("corridor"), "還沒回電不該聽到聲音"
+    $ assert _ls_tick("living_room", 30) == [], "還沒回電，在客廳待多久妹妹都不該出現"
+    $ assert game_state.events.count_of("living_room.sister_appears") == 0
+    $ assert not game_state.events.is_dead("living_room.sister_appears"), "條件不符不該把妹妹的事件用掉"
+
+    # --- 回電 ---
+    $ _ls_puzzle("sister_phone", PUZZLE_SOLVED)
+
+    # 走廊：聽到聲音，只講一次
+    $ _labels = _ls_enter("corridor")
+    $ assert "sister_phone_unlocked_hear_something" in _labels, f"回電後進走廊要聽到聲音，實際 {_labels}"
+    $ assert "sister_phone_unlocked_hear_something" not in _ls_enter("corridor"), "聲音只講一次"
+    $ assert _ls_tick("corridor", 30) == [], "妹妹警告之前，走廊不該扣血"
+
+    # 客廳：第 5 秒妹妹出現
+    $ assert _ls_tick("living_room", 4.9) == [], "還沒到 5 秒"
+    $ _labels = _ls_tick("living_room", 5)
+    $ assert _labels == ["sister_appears"], f"第 5 秒妹妹要出現，實際 {_labels}"
+    $ assert game_state.flags.has("sister_warned")
+
+    # --- 壞結局：客廳待到 7 秒、走廊待到 2 秒，兩次加起來要死 ---
+    $ _hp0 = _ls_hp()
+    $ _spare0 = game_state.inventory.count_of("spare_battery")
+    $ assert _ls_tick("living_room", 6.9) == [], "妹妹講完後要給玩家 2 秒"
+    $ _labels = _ls_tick("living_room", 7)
+    $ assert _labels == ["demage_by_father"], f"客廳第 7 秒要扣血，實際 {_labels}"
+    $ assert _ls_hp() == _hp0 - 2, f"客廳扣 2，實際 {_hp0} → {_ls_hp()}"
+    $ assert game_state.inventory.count_of("spare_battery") == _spare0 + 1, "客廳那一下要補一顆電池，避免卡死"
+    $ assert _ls_tick("living_room", 30) == [], "客廳的追逐只有一次"
+
+    $ assert _ls_tick("corridor", 1.9) == []
+    $ _labels = _ls_tick("corridor", 2)
+    $ assert _labels == ["demage_by_father"], f"走廊第 2 秒要扣血，實際 {_labels}"
+    $ assert _ls_hp() == _hp0 - 5, f"走廊扣 3，實際 {_ls_hp()}"
+
+    # 開場 hp 5，兩下扣 5 —— 保險箱一次都沒答錯也會死，壞結局一定到得了
+    $ assert _hp0 == 5
+    $ assert game_state.actors.is_dead("player"), "hp 歸零要算死亡"
+    $ assert player_death_label() == "game_over", f"死亡要跳 game_over，實際 {player_death_label()}"
+    $ assert renpy.has_label("game_over")
+
+    # --- 真結局：被警告後直接逃進妹妹房間，剩下的追逐全部取消 ---
+    $ _ls_fresh_state()
+    $ _ls_puzzle("sister_phone", PUZZLE_SOLVED)
+    $ assert _ls_enter("sister_room").count("true_ending") == 0, "還沒被警告，進妹妹房間不該是結局"
+    $ _ls_tick("living_room", 5)
+    $ _labels = _ls_enter("sister_room")
+    $ assert "true_ending" in _labels, f"被警告後進妹妹房間要進結局，實際 {_labels}"
+    $ assert game_state.events.is_dead("living_room.chase"), "結局要取消客廳的追逐"
+    $ assert game_state.events.is_dead("corridor.chase"), "結局要取消走廊的追逐"
+    $ _hp0 = _ls_hp()
+    $ assert _ls_tick("living_room", 30) == [] and _ls_tick("corridor", 30) == [], "取消之後不該再扣血"
+    $ assert _ls_hp() == _hp0
+
+    # label 存在性
+    $ _missing = _ls_missing_labels()
+    $ assert not _missing, "找不到這些 label：\n" + "\n".join(_missing)
+
+    $ store.game_state = _ls_old_state

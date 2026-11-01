@@ -20,9 +20,26 @@ init python:
                     condition=Condition(require=["flashlight"]),
                     effect=Effect(actor="player", stats={"battery": -1}),
                     limit=None,                               # 每次進來都扣
-                )
+                ),
+                Event(
+                    id="corridor.hear_something",
+                    condition=Condition(require=["sister_phone_unlocked"]),
+                    trigger=TriggerType.ENTER_ROOM,
+                    effect=Effect(label="sister_phone_unlocked_hear_something"),
+                ),
             ]
         )
+        room.add_event(Event(
+            id="corridor.chase",
+            condition=Condition(require=["sister_warned"]),
+            trigger=TriggerType.TIMER,
+            delay=2,
+            effect=Effect(
+                label="demage_by_father",
+                actor="player",
+                stats={"hp": -3},
+            ),
+        ))
 
         room.add_hotspot(Hotspot(
             name="sign",
@@ -78,7 +95,8 @@ define ADMIN_NOTE = [
 ##################################################
 
 label corridor_enter:
-    "今天是最後一天上班了，我得把三樓那間一直開著門的那間房間打掃乾淨!"
+    "最後一班了。"
+    "只要把三樓那戶清空——就是門從上個月起一直開著的那間——這棟樓就跟我沒關係了。"
     return
 
 label admin_note:
@@ -91,11 +109,18 @@ label go_living_room:
     return
 
 label go_sister_room:
-    "(蹲著爬進去)"
+    "（你蹲下身，從洞口爬了進去。）"
     $ change_room("sister_room")
     return
 
 label cantgo_sister_room_dark:
-    me "太黑了，我需要照亮的東西"
-    me "裡面好可怕"
+    me "裡面一片漆黑，什麼都看不見。"
+    me "沒有光的話……我可不想把頭伸進去。"
+    return
+
+
+label sister_phone_unlocked_hear_something:
+    "（嘶……嘶嘶……）"
+    me "客廳那邊有聲音……"
+    me "好像是從那個籠子傳出來的。"
     return

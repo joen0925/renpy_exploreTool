@@ -27,9 +27,28 @@ init python:
                     condition=Condition(require=["flashlight"]),
                     effect=Effect(actor="player", stats={"battery": -1}),
                     limit=None,                               # 每次進來都扣
-                )
+                ),
+                Event(id="living_room.sister_appears",
+                    trigger=TriggerType.TIMER, delay=5,
+                    condition=Condition(require=["sister_phone_unlocked"]),
+                    effect=Effect(set_flags=["sister_warned"], label="sister_appears")
+                ),
             ]
         )
+
+        room.add_event(Event(
+            id="living_room.chase",
+            condition=Condition(require=["sister_warned"]),
+            trigger=TriggerType.TIMER,
+            delay=7,
+            effect=Effect(
+                label="demage_by_father",
+                actor="player",
+                give_items=[("spare_battery", 1)],
+                stats={"hp": -2},
+            ),
+        ))
+
         room.add_hotspot(Hotspot(
             name="back_corridor",
             x=705, y=230,
@@ -177,9 +196,9 @@ init python:
 ##################################################
 
 label living_room_enter:
-    "這客廳也太簡陋了吧，只有一張桌子和桌子!"
-    "等等!"
-    "那是寵物籠嗎?"
+    "這客廳空得不像有人住過，只剩一張桌子。"
+    "等等。"
+    "角落那個……是寵物籠嗎？"
     return
 
 label living_room_go_corridor:
@@ -191,57 +210,74 @@ label living_room_door_closes:
     return
 
 label open_drawer:
-    "打開抽屜"
+    "你拉開抽屜。"
     call open_closeup("drawer_inside")
     return
 
 label found_flashlight_spare_battery:
-    me "找到電池和手電筒了，走廊上似乎有個洞可以進去"
+    me "一支手電筒，還有幾顆備用電池。"
+    me "有了光，走廊盡頭那個洞應該爬得進去。"
     return
 
 label distribution_box_no_item:
-    me "沒有東西了"
+    me "裡面已經空了。"
     return
 
 label distribution_box_lock:
-    me "該死，有鎖頭"
+    me "該死，上鎖了。"
+    me "鑰匙會放在哪……"
     return
 
 label battery_even_full:
-    me "電池還有電，不用換"
+    me "還有電，先不用換。"
     return
 
 label battery_swapped:
-    me "換好電池了"
+    me "換好了。光又回來了。"
     return
 
 label battery_no_spare:
-    me "備用電池用完了，剩下的電要省著點用"
+    me "備用電池用完了……剩下的電得省著用。"
     return
 
 label living_room_safe_locked:
-    me "保險箱鎖著，要輸入密碼"
+    me "保險箱上了鎖，要四位數的密碼。"
     call run_puzzle("safe")
     return
 
 label no_battery:
-    me "沒電池了，好像只能重玩了"
+    me "電池全用完了……"
+    me "在這片黑暗裡，我哪裡也去不了。"
     return
 
 label living_room_safe_opens:
-    me "我以為裡外有讓我加薪的東西"
-    me "結果只有一張照片，這東西很貴重?"
+    me "我還以為裡面會有錢……"
+    me "結果只有一張照片。有必要鎖得這麼嚴嗎？"
     return
 
 label living_room_safe_shock:
-    me "阿!這甚麼鬼鎖，解錯還會刺人的手"
-    me "好痛"
+    me "好痛！鍵盤裡竟然藏著針……"
+    me "按錯就扎手，這家人到底在防誰？"
     return
 
 label drawer_inside_take_key:
-    me "配電箱鑰匙!!"
+    me "一把鑰匙……牌子上寫著「配電」。"
     return
 
 label drawer_inside_take_note:
-    me "好奇怪的紙條，有點臭臭的"
+    me "一張發黃的紙條，摸起來濕濕黏黏的，還有股怪味。"
+    return
+
+label sister_appears:
+    call show_jumpscare("sister_scare")
+    sister "快...逃..爸爸要回來了"
+    play music "bgm/halloween_moonlight.mp3" fadein 1.0 volume 0.5
+    $ Effect(actor="player", stats={"battery": -99}).apply(game_state)   # 電量歸 0
+    me "手電筒...沒電了?!"
+    return
+
+label demage_by_father:
+    father "誰？！誰在我家裡？！"
+    "（刀刃擦過你的手臂。）"
+    me "啊——！得快點離開這裡！"
     return

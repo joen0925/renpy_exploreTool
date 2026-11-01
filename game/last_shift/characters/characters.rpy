@@ -19,7 +19,8 @@ init python:
         actors = {}
 
         add_actor(actors, build_me())
-        #add_actor(actors, build_annie())
+        add_actor(actors, build_sister())
+        add_actor(actors, build_father())
 
         return actors
 
