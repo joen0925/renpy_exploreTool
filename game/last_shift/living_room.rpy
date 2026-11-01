@@ -47,25 +47,7 @@ init python:
             name="drawer",
             x=1880, y=740,
             width=240,height=95,
-            condition=Condition(forbid=["drawer_key"]),
-            events=[
-                Event(
-                    id="living_room.open_drawer",
-                    sequence=10,
-                    effect=Effect(
-                        label="open_drawer",
-                    ),
-                    
-                ),
-                Event(
-                    id="living_room.take_item",
-                    sequence=20,
-                    effect=Effect(
-                        give_items=["drawer_key","note"],
-                        label="found_item",    
-                    ),
-                ),
-            ]
+            on_click="open_drawer",
         ))
         room.add_hotspot(Hotspot(
             name="distribution_box",
@@ -159,6 +141,34 @@ init python:
                 
             ]
         ))
+        return room
+
+    def build_drawer_inside():
+        room = Room(
+            name="drawer_inside",
+            background="images/closeup_drawer.png",
+            bg_width=1280,
+            bg_height=720,          # 近景一定要填
+        )
+        room.add_hotspot(Hotspot(
+            name="key",
+            x=900, y=200,
+            width=220, height=120,                    # 照原圖比例
+            idle="images/item_key.png",
+            condition=Condition(forbid=["drawer_key"]),   # 拿過就消失
+            events=[Event(id="drawer_inside.take_key",
+                        effect=Effect(give_items=["drawer_key"], label="drawer_inside_take_key"))],
+        ))
+        room.add_hotspot(Hotspot(
+            name="note",
+            x=300, y=400,
+            width=340, height=240,                    # 照原圖比例
+            idle="images/item_note.png",
+            condition=Condition(forbid=["note"]),   # 拿過就消失
+            events=[Event(id="drawer_inside.take_note",
+                        effect=Effect(give_items=["note"], label="drawer_inside_take_note"))],
+        ))
+
 
         return room
 
@@ -182,10 +192,7 @@ label living_room_door_closes:
 
 label open_drawer:
     "打開抽屜"
-    return
-
-label found_item:
-    me "裡面有好多東西喔，拿都拿"
+    call open_closeup("drawer_inside")
     return
 
 label found_flashlight_spare_battery:
@@ -229,4 +236,12 @@ label living_room_safe_opens:
 label living_room_safe_shock:
     me "阿!這甚麼鬼鎖，解錯還會刺人的手"
     me "好痛"
+    return
+
+label drawer_inside_take_key:
+    me "配電箱鑰匙!!"
+    return
+
+label drawer_inside_take_note:
+    me "好奇怪的紙條，有點臭臭的"
     return

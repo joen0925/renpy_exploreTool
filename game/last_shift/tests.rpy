@@ -86,14 +86,12 @@ testcase last_shift_step3:
     $ _labels = _ls_click("living_room", "distribution_box")
     $ assert _labels == ["distribution_box_lock"], f"第二次點也要講鎖住，實際 {_labels}"
 
-    # --- 抽屜：拿到三樣東西，之後熱點消失 ---
-    $ assert _ls_shown("living_room", "drawer"), "一開始要看得到抽屜"
-    $ _labels = _ls_click("living_room", "drawer")
-    $ assert _labels == ["open_drawer", "found_item"], f"抽屜的 label 順序不對，實際 {_labels}"
+    # --- 抽屜：拿到鑰匙與紙條 (第 5 步起改成近景，細節見 last_shift_step5) ---
+    $ _ls_click("drawer_inside", "key")
+    $ _ls_click("drawer_inside", "note")
     $ assert game_state.inventory.count_of("drawer_key") == 1
     $ assert game_state.inventory.count_of("note") == 1
     $ assert game_state.inventory.count_of("photo") == 0, "第 4 步起相片改放保險箱，抽屜不該給"
-    $ assert not _ls_shown("living_room", "drawer"), "拿完東西抽屜熱點應該消失"
 
     # --- 配電箱：有鑰匙 → 手電筒 + 電池，只給一次 ---
     $ _labels = _ls_click("living_room", "distribution_box")
@@ -279,6 +277,97 @@ testcase last_shift_step4:
     # --- 靜態檢查：所有會被跑到的 label 都存在 ---
     #
     # label 打錯不會在啟動時報錯，要等玩家真的點到才會跳 LabelNotFound。
+    $ _missing = _ls_missing_labels()
+    $ assert not _missing, "找不到這些 label：\n" + "\n".join(_missing)
+
+    $ store.game_state = _ls_old_state
+
+
+##################################################
+# 第 5 步：近景抽屜
+#
+#   執行方式：renpy.exe <專案路徑> test last_shift_step5
+##################################################
+
+init python:
+
+    def _ls_hotspot_box_problems(room_name):
+        """
+        近景裡的圖片熱點：有沒有超出框、圖的比例有沒有被拉歪。
+        回傳問題清單，沒問題就是空的。
+        """
+        room = rooms[room_name]
+        problems = []
+        for h in room.hotspots:
+            if h.x < 0 or h.y < 0 or h.x + h.width > room.bg_width or h.y + h.height > room.bg_height:
+                problems.append(f"{h.name} 超出框 ({h.x}, {h.y}, {h.width}×{h.height})")
+
+            if h.idle:
+                if not renpy.loadable(h.idle):
+                    problems.append(f"{h.name} 的圖 {h.idle} 不存在")
+                    continue
+                iw, ih = renpy.image_size(h.idle)
+                # 寬高比差 2% 以內算一樣
+                if abs((h.width / h.height) / (iw / ih) - 1) > 0.02:
+                    problems.append(f"{h.name} 被拉歪：原圖 {iw}×{ih}，熱點 {h.width}×{h.height}")
+        return problems
+
+
+testcase last_shift_step5:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _ls_old_state = _ls_fresh_state()
+
+    # --- 近景本身 ---
+    $ _cu = rooms["drawer_inside"]
+    $ assert _cu.bg_height == 720 and _cu.bg_width == 1280, "近景框應該是 1280×720"
+    $ _problems = _ls_hotspot_box_problems("drawer_inside")
+    $ assert not _problems, "\n".join(_problems)
+
+    # --- 客廳的抽屜開近景，不再直接給東西 ---
+    $ _labels = _ls_click("living_room", "drawer")
+    $ assert _labels == ["open_drawer"], f"點抽屜應該只開近景，實際 {_labels}"
+    $ assert not game_state.inventory.has("drawer_key"), "點抽屜不該直接拿到鑰匙"
+    $ assert not game_state.inventory.has("note"), "點抽屜不該直接拿到紙條"
+
+    # --- 先拿紙條：鑰匙還在 ---
+    $ assert _ls_shown("drawer_inside", "note") and _ls_shown("drawer_inside", "key")
+    $ _labels = _ls_click("drawer_inside", "note")
+    $ assert _labels == ["drawer_inside_take_note"], f"拿紙條的 label，實際 {_labels}"
+    $ assert game_state.inventory.count_of("note") == 1
+    $ assert not _ls_shown("drawer_inside", "note"), "拿過紙條就該消失"
+    $ assert _ls_shown("drawer_inside", "key"), "只拿了紙條，鑰匙還要在"
+    $ assert not game_state.inventory.has("drawer_key")
+
+    # 鑰匙還沒拿，配電箱還是鎖著
+    $ _labels = _ls_click("living_room", "distribution_box")
+    $ assert _labels == ["distribution_box_lock"], f"沒鑰匙配電箱應該鎖著，實際 {_labels}"
+
+    # --- 再拿鑰匙 ---
+    $ _labels = _ls_click("drawer_inside", "key")
+    $ assert _labels == ["drawer_inside_take_key"], f"拿鑰匙的 label，實際 {_labels}"
+    $ assert game_state.inventory.count_of("drawer_key") == 1
+    $ assert not _ls_shown("drawer_inside", "key"), "拿過鑰匙就該消失"
+
+    # 兩樣都拿完：抽屜還能打開 (看空抽屜)，東西不會重複給
+    $ assert _ls_shown("living_room", "drawer"), "拿完之後抽屜還在"
+    $ _ls_click("living_room", "drawer")
+    $ assert game_state.inventory.count_of("note") == 1
+    $ assert game_state.inventory.count_of("drawer_key") == 1
+
+    # 第 3 步的流程沒壞：有鑰匙就打得開配電箱
+    $ _labels = _ls_click("living_room", "distribution_box")
+    $ assert _labels == ["found_flashlight_spare_battery"], f"有鑰匙應該打開配電箱，實際 {_labels}"
+
+    # --- 反過來的順序：先拿鑰匙也可以 ---
+    $ _ls_fresh_state()
+    $ _ls_click("drawer_inside", "key")
+    $ assert game_state.inventory.has("drawer_key") and not game_state.inventory.has("note")
+    $ assert _ls_shown("drawer_inside", "note"), "只拿了鑰匙，紙條還要在"
+    $ _ls_click("drawer_inside", "note")
+    $ assert game_state.inventory.has("note")
+
+    # label 存在性 (新加的近景也一起查)
     $ _missing = _ls_missing_labels()
     $ assert not _missing, "找不到這些 label：\n" + "\n".join(_missing)
 

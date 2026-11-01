@@ -6,6 +6,7 @@ init python:
         rooms["corridor"] = build_corridor()
         rooms["sister_room"] = build_sister_room()
         rooms["living_room"] = build_living_room()
+        rooms["drawer_inside"] = build_drawer_inside()
 
         return rooms
 
