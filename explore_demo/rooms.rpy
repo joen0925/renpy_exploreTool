@@ -1,6 +1,12 @@
 ##################################################
 # rooms.rpy
 #
+#   ⚠️ explore_demo/ 現在只供閱讀，不能直接執行。
+#      2026-11-01 整理時刪掉了沒有教學價值的 kitchen.rpy 與 bed_room.rpy，
+#      所以下面的 build_kitchen() / build_bed_room() 已經不存在；
+#      tests.rpy 裡用到這兩間的測試也一樣跑不起來。
+#      要找回原版：git log -- explore_demo/kitchen.rpy
+#
 #   房間清單 (遊戲內容，不屬於 game/libs/explore/ 的引擎)
 #
 #   新增房間的步驟：
