@@ -48,6 +48,7 @@ init python:
             key="photo",
             name="照片",
             description="看起來有兩個人",
+            icon="images/item_photo.png",
             tag="物品",
         )
 

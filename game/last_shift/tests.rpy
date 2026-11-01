@@ -92,7 +92,7 @@ testcase last_shift_step3:
     $ assert _labels == ["open_drawer", "found_item"], f"抽屜的 label 順序不對，實際 {_labels}"
     $ assert game_state.inventory.count_of("drawer_key") == 1
     $ assert game_state.inventory.count_of("note") == 1
-    $ assert game_state.inventory.count_of("photo") == 1
+    $ assert game_state.inventory.count_of("photo") == 0, "第 4 步起相片改放保險箱，抽屜不該給"
     $ assert not _ls_shown("living_room", "drawer"), "拿完東西抽屜熱點應該消失"
 
     # --- 配電箱：有鑰匙 → 手電筒 + 電池，只給一次 ---
@@ -173,4 +173,113 @@ testcase last_shift_step3:
                 _seen_ids[_e.id] = _rn
 
     # 放回原本的狀態
+    $ store.game_state = _ls_old_state
+
+
+##################################################
+# 第 4 步：兩個解謎
+#
+#   執行方式：renpy.exe <專案路徑> test last_shift_step4
+#
+#   不開關卡畫面 —— 直接拿 puzzle_result_effect 餵三種結果，
+#   跟 run_puzzle 套用 Effect 是同一個函式。
+##################################################
+
+init python:
+
+    def _ls_puzzle(key, result):
+        """模擬關卡結束，回傳要跑的 label (沒有就是 None)。"""
+        p = puzzle_def(key)
+        assert p is not None, f"找不到關卡 {key}"
+        eff = puzzle_result_effect(p, result)
+        return eff.apply(store.game_state) if eff is not None else None
+
+    def _ls_missing_labels():
+        """房間、熱點、事件、關卡裡寫到的 label，回傳找不到的那些。"""
+        missing = []
+
+        def need(where, name):
+            if name and not renpy.has_label(name):
+                missing.append(f"{where} → {name}")
+
+        for rn, r in rooms.items():
+            need(f"{rn}.on_enter", r.on_enter)
+            evs = list(r.events)
+            for h in r.hotspots:
+                need(f"{rn}.{h.name}.on_click", h.on_click)
+                evs += list(h.events)
+            for e in evs:
+                need(e.id, e.effect.label if e.effect else None)
+
+        for pk, p in puzzle_catalog.items():
+            for kind, eff in (("on_success", p.on_success), ("on_failure", p.on_failure)):
+                need(f"puzzle {pk}.{kind}", eff.label if eff else None)
+
+        return missing
+
+
+testcase last_shift_step4:
+
+    $ __import__("renpy").test.testsettings._test.timeout = 30.0
+    $ _ls_old_state = _ls_fresh_state()
+
+    # --- 保險箱 ---
+    $ assert _ls_shown("living_room", "safe"), "一開始要看得到保險箱"
+    $ _labels = _ls_click("living_room", "safe")
+    $ assert _labels == ["living_room_safe_locked"], f"點保險箱應該開密碼鎖，實際 {_labels}"
+    $ assert puzzle_def("safe").code == "4721", "保險箱密碼應該跟紙條一樣"
+    $ assert "4721" in item_def("note").description, "紙條上要寫著密碼"
+    $ assert puzzle_def("safe").pausable is False, "保險箱解的時候世界不停"
+
+    # 按 ✕：什麼都不做
+    $ _hp = game_state.actors.get("player", "hp")
+    $ assert _ls_puzzle("safe", PUZZLE_CLOSED) is None
+    $ assert game_state.actors.get("player", "hp") == _hp, "關掉不該扣血"
+    $ assert not game_state.inventory.has("photo")
+
+    # 答錯：扣 1 滴血，講話
+    $ _label = _ls_puzzle("safe", PUZZLE_FAILED)
+    $ assert _label == "living_room_safe_shock", f"答錯的 label，實際 {_label}"
+    $ assert game_state.actors.get("player", "hp") == _hp - 1, "答錯要扣 1 滴血"
+    $ assert not game_state.inventory.has("photo"), "答錯不該拿到相片"
+    $ assert _ls_shown("living_room", "safe"), "答錯保險箱還在"
+
+    # 答對：拿到相片，保險箱消失
+    $ _label = _ls_puzzle("safe", PUZZLE_SOLVED)
+    $ assert _label == "living_room_safe_opens", f"答對的 label，實際 {_label}"
+    $ assert game_state.inventory.count_of("photo") == 1, "答對要拿到一張相片"
+    $ assert game_state.flags.has("safe_opened")
+    $ assert not _ls_shown("living_room", "safe"), "打開過保險箱熱點應該消失"
+    $ assert item_def("photo").icon, "相片要有圖，說明視窗才看得到刮痕"
+
+    # --- 舊手機 ---
+    $ assert _ls_shown("sister_room", "sister_phone"), "一開始要看得到手機"
+    $ _labels = _ls_click("sister_room", "sister_phone")
+    $ assert _labels == ["sister_room_old_phone"], f"點手機應該開圖形鎖，實際 {_labels}"
+
+    $ _p = puzzle_def("sister_phone")
+    $ assert _p.pattern == [1, 5, 9], f"手機圖形應該是 159，實際 {_p.pattern}"
+    $ assert len(_p.pattern) >= _p.min_length, "圖形比 min_length 短會永遠解不開"
+
+    # 玩家直接從 1 拖到 9，中間的 5 自動連上 —— 一樣算對
+    $ assert pattern_extend([1], 9) == [1, 5, 9], "1 拖到 9 應該自動經過 5"
+
+    $ _hp = game_state.actors.get("player", "hp")
+    $ assert _ls_puzzle("sister_phone", PUZZLE_CLOSED) is None
+    $ _label = _ls_puzzle("sister_phone", PUZZLE_FAILED)
+    $ assert _label == "sister_phone_wrong", f"畫錯的 label，實際 {_label}"
+    $ assert game_state.actors.get("player", "hp") == _hp, "畫錯不扣血"
+    $ assert _ls_shown("sister_room", "sister_phone"), "畫錯手機還在"
+
+    $ _label = _ls_puzzle("sister_phone", PUZZLE_SOLVED)
+    $ assert _label == "sister_phone_unlocked", f"解開的 label，實際 {_label}"
+    $ assert game_state.flags.has("sister_phone_unlocked")
+    $ assert not _ls_shown("sister_room", "sister_phone"), "解開後手機熱點應該消失"
+
+    # --- 靜態檢查：所有會被跑到的 label 都存在 ---
+    #
+    # label 打錯不會在啟動時報錯，要等玩家真的點到才會跳 LabelNotFound。
+    $ _missing = _ls_missing_labels()
+    $ assert not _missing, "找不到這些 label：\n" + "\n".join(_missing)
+
     $ store.game_state = _ls_old_state

@@ -40,6 +40,7 @@ init python:
             name="safe",
             x=1300, y=330,
             width=200,height=170,
+            condition=Condition(forbid=["safe_opened"]),
             on_click="living_room_safe_locked",
         ))
         room.add_hotspot(Hotspot(
@@ -60,7 +61,7 @@ init python:
                     id="living_room.take_item",
                     sequence=20,
                     effect=Effect(
-                        give_items=["drawer_key","note","photo"],
+                        give_items=["drawer_key","note"],
                         label="found_item",    
                     ),
                 ),
@@ -213,8 +214,19 @@ label battery_no_spare:
 
 label living_room_safe_locked:
     me "保險箱鎖著，要輸入密碼"
+    call run_puzzle("safe")
     return
 
 label no_battery:
     me "沒電池了，好像只能重玩了"
+    return
+
+label living_room_safe_opens:
+    me "我以為裡外有讓我加薪的東西"
+    me "結果只有一張照片，這東西很貴重?"
+    return
+
+label living_room_safe_shock:
+    me "阿!這甚麼鬼鎖，解錯還會刺人的手"
+    me "好痛"
     return
